@@ -1,0 +1,43 @@
+# Detector model file
+# Detector: ICARUS
+# Version: v1
+# Material model file: ICARUS-v1.dat
+# Authors: Shubham Gupta
+# Notes:
+
+
+# ==============================
+# WORLD
+# ==============================
+object box 0 0 0   0 0 0   50 50 50   world_air   AIR   constant 0.001225
+
+# Full ICARUS envelope (covers both modules)
+object box 0 0 0  0 0 0  5 2.5 10  icarus_full  LAR constant 1.396
+
+# ==============================
+# ICARUS MODULES (2 cryostats)
+# ==============================
+
+# Left module
+object box -2.0 0 0   0 0 0   1.8 1.95 9.8   icarus_left   LAR   constant 1.396
+
+# Right module
+object box  2.0 0 0   0 0 0   1.8 1.95 9.8   icarus_right  LAR   constant 1.396
+
+# ==============================
+# DETECTOR
+# ==============================
+detector 0 0 0
+
+# ==============================
+# FIDUCIAL VOLUMES
+# ==============================
+
+# Left fiducial
+object box -2.0 0 0   0 0 0   1.5 1.5 8.0   fid_left   LAR   constant 1.396
+
+# Right fiducial
+object box  2.0 0 0   0 0 0   1.5 1.5 8.0   fid_right  LAR   constant 1.396
+
+fiducial fid_left
+fiducial fid_right
