@@ -13,7 +13,6 @@ events_to_inject = int(1e5)
 base = "/home/shubham/SIREN/resources/detectors/ICARUS/ICARUS-v1"
 
 detector_model = siren.detector.DetectorModel(
-    os.path.join(base, "ICARUS-v1.dat"),
     os.path.join(base, "densities.dat"),
     os.path.join(base, "materials.dat"),
 )
