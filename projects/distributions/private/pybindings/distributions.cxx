@@ -2,6 +2,7 @@
 #include <vector>
 #include <string>
 
+#include "SIREN/distributions/primary/vertex/BoxVolumePositionDistribution.h"
 #include "../../public/SIREN/distributions/Distributions.h"
 #include "../../public/SIREN/distributions/primary/direction/PrimaryDirectionDistribution.h"
 #include "../../public/SIREN/distributions/primary/direction/Cone.h"
@@ -200,6 +201,14 @@ PYBIND11_MODULE(distributions,m) {
     .def("InjectionBounds",&CylinderVolumePositionDistribution::InjectionBounds)
     .def("Name",&CylinderVolumePositionDistribution::Name);
 
+  class_<BoxVolumePositionDistribution,
+       std::shared_ptr<BoxVolumePositionDistribution>,
+       VertexPositionDistribution>(m, "BoxVolumePositionDistribution")
+    .def(init<siren::geometry::Box>())
+    .def("GenerationProbability", &BoxVolumePositionDistribution::GenerationProbability)
+    .def("InjectionBounds", &BoxVolumePositionDistribution::InjectionBounds)
+    .def("Name", &BoxVolumePositionDistribution::Name);
+
   class_<ColumnDepthPositionDistribution, std::shared_ptr<ColumnDepthPositionDistribution>, VertexPositionDistribution>(m, "ColumnDepthPositionDistribution")
     .def(init<double, double, std::shared_ptr<DepthFunction>>())
     .def("GenerationProbability",&ColumnDepthPositionDistribution::GenerationProbability)
@@ -272,5 +281,6 @@ PYBIND11_MODULE(distributions,m) {
     .def("InjectionBounds",overload_cast<std::shared_ptr<siren::detector::DetectorModel const>, std::shared_ptr<siren::interactions::InteractionCollection const>, siren::dataclasses::InteractionRecord const &>(&SecondaryBoundedVertexDistribution::InjectionBounds, const_))
     .def("Name",&SecondaryBoundedVertexDistribution::Name);
 }
+
 
 

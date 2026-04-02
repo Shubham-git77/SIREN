@@ -1,4 +1,3 @@
-
 #core files
 LIST (APPEND distributions_SOURCES
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/Distributions.cxx
@@ -28,7 +27,13 @@ LIST (APPEND distributions_SOURCES
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/vertex/RangePositionDistribution.cxx
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/vertex/DecayRangePositionDistribution.cxx
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/vertex/OrientedCylinderPositionDistribution.cxx
+
+    # ✅ EXISTING
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/vertex/CylinderVolumePositionDistribution.cxx
+
+    # 🔥 ADDED THIS LINE (YOUR FIX)
+    ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/vertex/BoxVolumePositionDistribution.cxx
+
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/vertex/ColumnDepthPositionDistribution.cxx
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/vertex/FixedTargetPositionDistribution.cxx
 
@@ -39,8 +44,10 @@ LIST (APPEND distributions_SOURCES
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/secondary/vertex/SecondaryPhysicalVertexDistribution.cxx
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/secondary/vertex/SecondaryBoundedVertexDistribution.cxx
 )
+
 add_library(SIREN_distributions OBJECT ${distributions_SOURCES})
 set_property(TARGET SIREN_distributions PROPERTY POSITION_INDEPENDENT_CODE ON)
+
 target_include_directories(SIREN_distributions PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/projects/distributions/public/>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/SIREN/distributions/>
@@ -60,6 +67,7 @@ target_link_libraries(SIREN_distributions
         SIREN_detector
         SIREN_interactions
 )
+
 apply_siren_compile_options(SIREN_distributions)
 
 install(DIRECTORY "${PROJECT_SOURCE_DIR}/projects/distributions/public/"
@@ -74,6 +82,7 @@ package_add_test(UnitTest_PrimaryEnergyDistribution ${PROJECT_SOURCE_DIR}/projec
 
 pybind11_add_module(distributions ${PROJECT_SOURCE_DIR}/projects/distributions/private/pybindings/distributions.cxx)
 target_link_libraries(distributions PRIVATE SIREN)
+
 if(DEFINED SKBUILD)
 set_target_properties(distributions PROPERTIES
         BUILD_WITH_INSTALL_RPATH FALSE

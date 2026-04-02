@@ -1,0 +1,12 @@
+# Density model file
+# Detector: SBND
+# Version: v1
+# Author: Subham Patra
+# Units: g/cm^3
+
+AIR        0.001225
+ROCK       2.650
+MANTLE     4.500
+OUTERCORE  11.000
+INNERCORE  13.000
+LAR        1.396

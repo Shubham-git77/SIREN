@@ -1,0 +1,7 @@
+# Material ratio file for SBND
+# Format:
+# <region_name> <number_of_materials>
+# <material_name> <fraction>
+
+sbnd_active 1
+LAR 1.0
