@@ -1,6 +1,8 @@
 import os
 import numpy as np
 import pickle
+import json
+import tempfile
 
 from siren import _util
 
@@ -14,8 +16,7 @@ from siren import dataclasses
 from siren.dataclasses import Particle
 
 # DarkNews methods
-import DarkNews
-from DarkNews.processes import FermionDileptonDecay, FermionSinglePhotonDecay
+from DarkNews.processes import FermionDileptonDecay, FermionSinglePhotonDecay, ThreePortalDecay
 from DarkNews import processes as proc
 from DarkNews import Cfourvec as Cfv
 from DarkNews import phase_space
@@ -51,7 +52,7 @@ def get_decay_momenta_from_vegas_samples(vsamples, MC_case, decay_case, PN_LAB):
     #######################
     # DECAY PROCESSES
 
-    if type(decay_case) == proc.FermionDileptonDecay:
+    if isinstance(decay_case, proc.FermionDileptonDecay):
 
         mh = decay_case.m_parent
         mf = decay_case.m_daughter
@@ -109,9 +110,9 @@ def get_decay_momenta_from_vegas_samples(vsamples, MC_case, decay_case, PN_LAB):
             # HNL decay
             N_decay_samples = {
                 "unit_t": vsamples[0],
-                "unit_u": vsamples[1],
-                "unit_c3": vsamples[2],
-                "unit_phi34": vsamples[3],
+                "unit_u": vsamples[1] if len(vsamples) > 1 else np.array([0.5]),
+                "unit_c3": vsamples[2] if len(vsamples) > 1 else np.array([0.5]),
+                "unit_phi34": vsamples[3] if len(vsamples) > 3 else np.array([0.0]),
             }
 
             # Ni (k1) --> ell-(k2)  ell+(k3)  Nj(k4)
@@ -134,7 +135,7 @@ def get_decay_momenta_from_vegas_samples(vsamples, MC_case, decay_case, PN_LAB):
             four_momenta["P_decay_ell_plus"] = P3LAB_decay
             four_momenta["P_decay_N_daughter"] = P4LAB_decay
 
-    elif type(decay_case) == proc.FermionSinglePhotonDecay:
+    elif isinstance(decay_case, proc.FermionSinglePhotonDecay):
 
         mh = decay_case.m_parent
         mf = decay_case.m_daughter
@@ -175,6 +176,7 @@ class PyDarkNewsDecay(DarkNewsDecay):
         # Some variables for storing the decay phase space integrator
         self.decay_integrator = None
         self.decay_norm = None
+        self.decay_result = None    # vegas results dict {"diff_decay_rate_0": ...}
         self.PS_samples = None
         self.PS_weights = None
         self.PS_weights_CDF = None
@@ -192,13 +194,30 @@ class PyDarkNewsDecay(DarkNewsDecay):
         decay_file = os.path.join(table_dir, "decay.pkl")
         if os.path.isfile(decay_file):
             with open(decay_file, "rb") as f:
-                self.decay_norm, self.decay_integrator = pickle.load(f)
+                data = pickle.load(f)
+            if isinstance(data, dict):
+                # Current format: save_to_table stores a dict
+                self.decay_norm       = data.get("decay_norm")
+                self.decay_integrator = data.get("decay_integrator")
+                self.decay_result     = data.get("decay_result")   # may be None for old saves
+                # line ~115
+                if self.decay_integrator is not None and self.decay_result is None:
+                    print("[WARNING] Incomplete decay.pkl detected → will recompute automatically")
+            elif isinstance(data, (tuple, list)) and len(data) == 2:
+                # Legacy format: older saves stored a 2-tuple
+                self.decay_norm, self.decay_integrator = data
+                self.decay_result = None
+            else:
+                raise RuntimeError(
+                    "Unrecognised format in decay.pkl — delete the file and rerun."
+                )
 
     def save_to_table(self, table_dir):
         with open(os.path.join(table_dir, "decay.pkl"),'wb') as f:
             pickle.dump({
                 "decay_integrator": self.decay_integrator,
-                "decay_norm": self.decay_norm
+                "decay_norm": self.decay_norm,
+                "decay_result": self.decay_result,
             }, f)
 
     # serialization method
@@ -212,9 +231,10 @@ class PyDarkNewsDecay(DarkNewsDecay):
                 "total_width": self.total_width,
                }
 
-    def SetIntegratorAndNorm(self, decay_norm, decay_integrator):
+    def SetIntegratorAndNorm(self, decay_norm, decay_integrator, decay_result=None):
         self.decay_norm = decay_norm
         self.decay_integrator = decay_integrator
+        self.decay_result = decay_result
 
     def GetPossibleSignatures(self):
         signature = dataclasses.InteractionSignature()
@@ -315,15 +335,59 @@ class PyDarkNewsDecay(DarkNewsDecay):
                 # total width calculation requires evaluating an integral
                 if self.decay_integrator is None or self.decay_norm is None:
                     # We need to initialize a new VEGAS integrator in DarkNews
-                    self.total_width, dec_norm, dec_integrator = self.dec_case.total_width(
-                        return_norm=True, return_dec=True
+                    norm_file = tempfile.NamedTemporaryFile(delete=False)
+                    integrator_file = tempfile.NamedTemporaryFile(delete=False)
+                    norm_name = norm_file.name
+                    integrator_name = integrator_file.name
+                    norm_file.close()
+                    integrator_file.close()
+                    self.total_width = self.dec_case.total_width(
+                        savefile_norm=norm_name, savefile_dec=integrator_name
                     )
-                    self.SetIntegratorAndNorm(dec_norm, dec_integrator)
+                    # Get normalization and integrator objects from files and then delete them
+                    try:
+                        with open(norm_name, "r") as f:
+                            dec_norm = json.load(f)
+                        try:
+                            with open(integrator_name, "rb") as f:
+                                dec_result, dec_integrator = pickle.load(f)
+                        except EOFError:
+                            print("[WARNING] Corrupted integrator file — recomputing")
+                            dec_result = None
+                            dec_integrator = None
+                    finally:
+                        if os.path.exists(norm_name):
+                            os.remove(norm_name)
+                        if os.path.exists(integrator_name):
+                            os.remove(integrator_name)
+
+                    self.SetIntegratorAndNorm(dec_norm, dec_integrator, dec_result)
                 else:
-                    self.total_width = (
-                        self.decay_integrator["diff_decay_rate_0"].mean
-                        * self.decay_norm["diff_decay_rate_0"]
-                    )
+                    # Use the saved results dict (not the raw integrator) to compute mean
+                    # line ~360 (replace entire block)
+                    if self.decay_result is None:
+                        print("[WARNING] decay_result missing → recomputing integrator")
+
+                        self.decay_integrator = None
+                        self.decay_norm = None
+                        self.decay_result = None
+                        self.total_width = None
+
+                        return self.TotalDecayWidth(arg1)
+                    # line ~367
+                    if isinstance(self.decay_result, dict):
+                        self.total_width = (
+                            self.decay_result["diff_decay_rate_0"].mean
+                            * self.decay_norm["diff_decay_rate_0"]
+                        )
+
+                    elif hasattr(self.decay_integrator, "mean"):
+                        print("[INFO] Using integrator.mean (new API)")
+                        self.total_width = self.decay_integrator.mean
+
+                    else:
+                        print("[WARNING] fallback → using dec_case.total_width()")
+                        self.total_width = self.dec_case.total_width()
             else:
                 self.total_width = self.dec_case.total_width()
         return self.total_width
@@ -370,18 +434,6 @@ class PyDarkNewsDecay(DarkNewsDecay):
         if self.PS_weights_CDF is None:
             self.PS_weights_CDF = np.cumsum(self.PS_weights)
 
-        # Random number to determine
-        x = random.Uniform(0, self.PS_weights_CDF[-1])
-
-        # find first instance of a CDF entry greater than x
-        PSidx = np.argmax(x - self.PS_weights_CDF <= 0)
-        return self.PS_samples[:, PSidx]
-
-    def GetPSSample(self, random):
-        # Make the PS weight CDF if that hasn't been done
-        if self.PS_weights_CDF is None:
-            self.PS_weights_CDF = np.cumsum(self.PS_weights)
-
         # Check that the CDF makes sense
         total_weight = self.PS_weights_CDF[-1]
         if total_weight == 0:
@@ -400,9 +452,24 @@ class PyDarkNewsDecay(DarkNewsDecay):
             # We need to generate new PS samples
             if self.decay_integrator is None or self.decay_norm is None:
                 # We need to initialize a new VEGAS integrator in DarkNews
-                (self.PS_samples, PS_weights_dict), dec_norm, dec_integrator = self.dec_case.SamplePS(
-                    return_norm=True, return_dec=True
+                norm_file = tempfile.NamedTemporaryFile(delete=False)
+                integrator_file = tempfile.NamedTemporaryFile(delete=False)
+                norm_name = norm_file.name
+                integrator_name = integrator_file.name
+                norm_file.close()
+                integrator_file.close()
+                self.PS_samples, PS_weights_dict = self.dec_case.SamplePS(
+                    savefile_norm=norm_name, savefile_dec=integrator_name
                 )
+                # Get normalization and integrator objects from files and then delete them
+                try:
+                    with open(norm_name, "r") as f:
+                        dec_norm = json.load(f)
+                    with open(integrator_name, "rb") as f:
+                        _, dec_integrator = pickle.load(f)
+                finally:
+                    os.remove(norm_name)
+                    os.remove(integrator_name)
                 self.PS_weights = PS_weights_dict["diff_decay_rate_0"]
                 self.SetIntegratorAndNorm(dec_norm, dec_integrator)
             else:
@@ -475,4 +542,3 @@ class PyDarkNewsDecay(DarkNewsDecay):
                 np.squeeze(four_momenta["P_decay_N_daughter"])
             )
         return record
-
