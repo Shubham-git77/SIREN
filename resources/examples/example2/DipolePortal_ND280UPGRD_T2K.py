@@ -68,8 +68,9 @@ primary_physical_distributions = {}
 mass_ddist = siren.distributions.PrimaryMass(0)
 
 # energy distribution (T2K uses TabulatedFluxDistribution directly)
-edist = siren.utilities.load_flux("T2K_NEAR", tag="PLUS_numu", physically_normalized=True)
-edist_gen = siren.utilities.load_flux("T2K_NEAR", tag="PLUS_numu", min_energy=model_kwargs["m4"], max_energy=20, physically_normalized=False)
+flux_path = siren.utilities.load_flux("T2K_NEAR", tag="PLUS_numu")
+edist = siren.distributions.TabulatedFluxDistribution(flux_path, True)
+edist_gen = siren.distributions.TabulatedFluxDistribution(flux_path, False)
 
 # direction distribution
 direction_distribution = siren.distributions.FixedDirection(siren.math.Vector3D(0, 0, 1.0))
