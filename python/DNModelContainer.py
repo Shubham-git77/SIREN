@@ -6,6 +6,7 @@ from particle import literals as lp
 
 # Dark Neutrino and MC stuff
 import DarkNews as dn
+
 logger = logging.getLogger("logger." + __name__)
 prettyprinter = logging.getLogger("prettyprinter." + __name__)
 from DarkNews.AssignmentParser import AssignmentParser
@@ -178,6 +179,14 @@ GENERIC_MODEL_ARGS = [
 
 
 class ModelContainer:
+
+    banner = r"""   ______           _        _   _                     
+   |  _  \         | |      | \ | |                    
+   | | | |__ _ _ __| | __   |  \| | _____      _____   
+   | | | / _  | ___| |/ /   | .   |/ _ \ \ /\ / / __|  
+   | |/ / (_| | |  |   <    | |\  |  __/\ V  V /\__ \  
+   |___/ \__,_|_|  |_|\_\   \_| \_/\___| \_/\_/ |___/  """
+
     # handle parameters that can assume only certain values
     _choices = {
         "HNLtype": ["dirac", "majorana"],
@@ -275,6 +284,7 @@ class ModelContainer:
             verbose=self.verbose,
             logfile=self.logfile,
         )
+        prettyprinter.info(self.banner)
 
         ####################################################
         # Choose the model to be used in this generation
@@ -521,7 +531,7 @@ class ModelContainer:
     def configure_logger(
         self,
         logger,
-        loglevel=logging.WARNING,
+        loglevel=logging.INFO,
         prettyprinter=None,
         logfile=None,
         verbose=False,
@@ -552,15 +562,8 @@ class ModelContainer:
             ValueError: _description_
         """
 
-        # override default loglevel
-        loglevel = logging.WARNING
-
-        if isinstance(loglevel, int):
-            _numeric_level = loglevel
-        elif isinstance(loglevel, str):
-            loglevel = loglevel.upper()
-            _numeric_level = getattr(logging, loglevel, None)
-
+        loglevel = loglevel.upper()
+        _numeric_level = getattr(logging, loglevel, None)
         if not isinstance(_numeric_level, int):
             raise ValueError("Invalid log level: %s" % self.loglevel)
         logger.setLevel(_numeric_level)
