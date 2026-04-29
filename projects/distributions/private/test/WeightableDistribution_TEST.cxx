@@ -15,19 +15,22 @@ TEST(WeightableDistribution, OperatorLessSameType) {
     EXPECT_FALSE(a < a);
 }
 
-TEST(WeightableDistribution, StrictWeakOrderingSameType) {
-    Monoenergetic a(10.0);
-    Monoenergetic b(20.0);
-    Monoenergetic c(30.0);
-    // Irreflexivity
-    EXPECT_FALSE(a < a);
-    // Asymmetry
-    EXPECT_TRUE(a < b);
-    EXPECT_FALSE(b < a);
-    // Transitivity
-    EXPECT_TRUE(a < b);
-    EXPECT_TRUE(b < c);
-    EXPECT_TRUE(a < c);
+TEST(WeightableDistribution, OperatorLessDifferentTypes) {
+    Monoenergetic mono(10.0);
+    PowerLaw power(2.0, 1.0, 100.0);
+
+    bool result1 = mono < power;
+    bool result2 = power < mono;
+    EXPECT_NE(result1, result2);
+}
+
+TEST(WeightableDistribution, OperatorLessDifferentFamilies) {
+    Monoenergetic mono(10.0);
+    IsotropicDirection iso;
+
+    bool result1 = mono < iso;
+    bool result2 = iso < mono;
+    EXPECT_NE(result1, result2);
 }
 
 TEST(WeightableDistribution, OperatorEqualSameType) {
@@ -44,6 +47,17 @@ TEST(WeightableDistribution, OperatorEqualDifferentTypes) {
     IsotropicDirection iso;
     EXPECT_FALSE(mono == power);
     EXPECT_FALSE(mono == iso);
+}
+
+TEST(WeightableDistribution, StrictWeakOrdering) {
+    Monoenergetic a(10.0);
+    Monoenergetic b(20.0);
+    Monoenergetic c(30.0);
+    EXPECT_FALSE(a < a);
+    EXPECT_TRUE(a < b);
+    EXPECT_FALSE(b < a);
+    EXPECT_TRUE(b < c);
+    EXPECT_TRUE(a < c);
 }
 
 int main(int argc, char** argv) {
