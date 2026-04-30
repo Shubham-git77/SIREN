@@ -32,9 +32,14 @@ ZLIB_VERSION="1.3.1"
 mkdir -p $CI_INSTALL_PREFIX
 
 if [[ $RUNNER_OS == "Linux" ]] ; then
-    :
+    if command -v apk >/dev/null 2>&1; then
+        apk add --no-cache gsl-dev || { echo "Failed to install GSL (apk)"; exit 1; }  # musllinux (Alpine)
+    else
+        (yum install -y gsl-devel || dnf install -y gsl-devel || microdnf install -y gsl-devel) || { echo "Failed to install GSL (yum/dnf/microdnf)"; exit 1; }  # manylinux
+    fi
 elif [[ $RUNNER_OS == "macOS" ]]; then
-    :
+    export HOMEBREW_NO_AUTO_UPDATE=1
+    brew list gsl >/dev/null 2>&1 || brew install gsl || { echo "Failed to install GSL (brew)"; exit 1; }
 elif [[ $RUNNER_OS == "Windows" ]]; then
     mkdir -p $CI_DOWNLOAD_PATH
     cd $CI_DOWNLOAD_PATH
@@ -48,7 +53,7 @@ elif [[ $RUNNER_OS == "Windows" ]]; then
 
     pip install delvewheel
 else
-    echo "Unknown runner OS: $RUNNER OS" 1>&2
+    echo "Unknown runner OS: $RUNNER_OS" 1>&2
     exit 1
 fi
 

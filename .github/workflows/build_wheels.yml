@@ -9,7 +9,7 @@ jobs:
     outputs:
       version: ${{ steps.cfitsio.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Read cfitsio version
         id: cfitsio
@@ -20,7 +20,7 @@ jobs:
 
       - name: Cache cfitsio source tarball
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .cfitsio-cache
           key: cfitsio-${{ steps.cfitsio.outputs.version }}-v1
@@ -54,29 +54,29 @@ jobs:
             arch: arm64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # IMPORTANT: CPython 3.8 on arm64 uses an x86_64 Python under Rosetta by default.
       # Installing a native arm64 Python 3.8 avoids CMake thinking it's x86_64.
       - name: Install native Python 3.8 (arm64 runner only)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         if: runner.os == 'macOS' && runner.arch == 'ARM64' && matrix.py == 'cp38'
         with:
           python-version: '3.8'
 
       - name: Restore cfitsio source tarball
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .cfitsio-cache
           key: cfitsio-${{ needs.populate_cfitsio_cache.outputs.version }}-v1
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.18.1
+        uses: pypa/cibuildwheel@v3.4.1
         env:
           CIBW_BUILD: ${{ matrix.py }}-*
           CIBW_ARCHS_MACOS: ${{ matrix.arch }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: cibw-wheels-${{ matrix.os }}-${{ matrix.arch }}-${{ matrix.py }}
           path: ./wheelhouse/*.whl
@@ -101,21 +101,21 @@ jobs:
             os: ubuntu-24.04-arm
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Restore cfitsio source tarball
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: .cfitsio-cache
           key: cfitsio-${{ needs.populate_cfitsio_cache.outputs.version }}-v1
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.18.1
+        uses: pypa/cibuildwheel@v3.4.1
         env:
           CIBW_BUILD: ${{ matrix.py }}-${{ matrix.image }}_${{ matrix.arch }}
           CIBW_ARCHS: ${{ matrix.arch }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: cibw-wheels-${{ matrix.os }}-${{ matrix.py }}-${{ matrix.image }}_${{ matrix.arch }}
           path: ./wheelhouse/*.whl
@@ -125,6 +125,6 @@ jobs:
     needs: [build_wheels_macos, build_wheels_linux]
     steps:
       - name: Merge Artifacts
-        uses: actions/upload-artifact/merge@v4
+        uses: actions/upload-artifact/merge@v6
         with:
           delete-merged: true
