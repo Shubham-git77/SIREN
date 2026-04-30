@@ -88,18 +88,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
         py: [cp38, cp39, cp310, cp311, cp312]
         image: [manylinux, musllinux]
         arch: [x86_64, aarch64]
+        include:
+          # Native runners per arch - aarch64 emulated under qemu was 13x
+          # slower (~80min vs ~6min), and GitHub now offers free arm64
+          # Linux runners for public repos.
+          - arch: x86_64
+            os: ubuntu-latest
+          - arch: aarch64
+            os: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: all
 
       - name: Restore cfitsio source tarball
         uses: actions/cache/restore@v4
@@ -111,7 +113,7 @@ jobs:
         uses: pypa/cibuildwheel@v2.18.1
         env:
           CIBW_BUILD: ${{ matrix.py }}-${{ matrix.image }}_${{ matrix.arch }}
-          CIBW_ARCHS: all
+          CIBW_ARCHS: ${{ matrix.arch }}
 
       - uses: actions/upload-artifact@v4
         with:
