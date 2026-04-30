@@ -157,34 +157,14 @@ def resource_dirs():
 
 
 # from imageio
-# https://github.com/imageio/imageio/blob/65d79140018bb7c64c0692ea72cb4093e8d632a0/imageio/core/util.py
 def resource_package_dir():
-    """package_dir
+    """Get the resources directory inside the installed siren package.
 
-    Get the resources directory in the siren package installation
-    directory.
-
-    Notes
-    -----
-    This is a convenience method that is used by `resource_dirs` and
-    siren entry point scripts.
+    This is a convenience method used by ``resource_dirs`` and siren
+    entry point scripts.
     """
-    # Make pkg_resources optional if setuptools is not available
-    try:
-        # Avoid importing pkg_resources in the top level due to how slow it is
-        # https://github.com/pypa/setuptools/issues/510
-        import pkg_resources
-    except ImportError:
-        pkg_resources = None
-
-    if pkg_resources:
-        # The directory returned by `pkg_resources.resource_filename`
-        # also works with eggs.
-        pdir = pkg_resources.resource_filename("siren", "resources")
-    else:
-        # If setuptools is not available, use fallback
-        pdir = os.path.abspath(os.path.join(THIS_DIR, "resources"))
-    return pdir
+    from importlib.resources import files
+    return str(files("siren") / "resources")
 
 
 # from imageio
