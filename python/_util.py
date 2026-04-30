@@ -701,7 +701,7 @@ def import_resource(resource_type, resource_name):
 
     fname = os.path.join(abs_dir, f"{resource_type}.py")
     if not os.path.isfile(fname):
-        logging.warning(f"Could not find file '{fname}' when loading resource '{resource_type}' '{resource_name}'")
+        # No .py loader script; caller falls back to file-based loading.
         return None
     try:
         mod = load_module(f"siren-{resource_type}-{resource_name}", fname, persist=False)
