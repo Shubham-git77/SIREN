@@ -56,29 +56,50 @@ pip install scikit-build-core
 
 pip install tomli-w
 
+CFITSIO_TARBALL="cfitsio-$CFITSIO_VERSION.tar.gz"
+# Cache dir lives under the project tree so the workflow's populate_cache
+# job can populate it before this script runs and restore it for every
+# matrix job. The fetch is delegated to fetch_cfitsio.sh (also called
+# directly by the workflow) so the mirror list and retry logic live in
+# one place.
+CFITSIO_CACHE_DIR="$PROJECT_DIR/.cfitsio-cache"
+
+mkdir -p "$CFITSIO_CACHE_DIR"
+if [ -f "$CFITSIO_CACHE_DIR/$CFITSIO_TARBALL" ] && \
+   tar -tzf "$CFITSIO_CACHE_DIR/$CFITSIO_TARBALL" >/dev/null 2>&1; then
+    echo "Using cached $CFITSIO_CACHE_DIR/$CFITSIO_TARBALL"
+else
+    if [ -f "$CFITSIO_CACHE_DIR/$CFITSIO_TARBALL" ]; then
+        echo "Cached tarball is corrupt; re-downloading"
+        rm -f "$CFITSIO_CACHE_DIR/$CFITSIO_TARBALL"
+    else
+        echo "cfitsio tarball not in cache; downloading"
+    fi
+    bash "$PROJECT_DIR/tools/wheels/fetch_cfitsio.sh" \
+        "$CFITSIO_VERSION" "$CFITSIO_CACHE_DIR/$CFITSIO_TARBALL"
+fi
+
 if [[ $RUNNER_OS == "Linux" || $RUNNER_OS == "macOS" ]]; then
-    mkdir -p $CI_DOWNLOAD_PATH
-    cd $CI_DOWNLOAD_PATH
-    curl https://heasarc.gsfc.nasa.gov/FTP/software/fitsio/c/cfitsio-$CFITSIO_VERSION.tar.gz --output cfitsio-$CFITSIO_VERSION.tar.gz
-    tar -xvf cfitsio-$CFITSIO_VERSION.tar.gz
-    cd cfitsio-$CFITSIO_VERSION
+    mkdir -p "$CI_DOWNLOAD_PATH/cfitsio-$CFITSIO_VERSION"
+    tar -xzf "$CFITSIO_CACHE_DIR/$CFITSIO_TARBALL" \
+        -C "$CI_DOWNLOAD_PATH/cfitsio-$CFITSIO_VERSION" --strip-components=1
+    cd "$CI_DOWNLOAD_PATH/cfitsio-$CFITSIO_VERSION"
     mkdir -p build
     cd build
     cmake ../ -DCMAKE_INSTALL_PREFIX=$CI_INSTALL_PREFIX
     cmake --build . --config Release
     cmake --install .
 elif [[ $RUNNER_OS == "Windows" ]]; then
-    mkdir -p $CI_DOWNLOAD_PATH
-    cd $CI_DOWNLOAD_PATH
-    curl https://heasarc.gsfc.nasa.gov/FTP/software/fitsio/c/cfitsio-$CFITSIO_VERSION.tar.gz --output cfitsio-$CFITSIO_VERSION.tar.gz
-    tar -xvf cfitsio-$CFITSIO_VERSION.tar.gz
-    mkdir -p cfitsio-$CFITSIO_VERSION.build
-    cd cfitsio-$CFITSIO_VERSION.build
-    cmake ../cfitsio-$CFITSIO_VERSION -DCMAKE_INSTALL_PREFIX=$CI_INSTALL_PREFIX
+    mkdir -p "$CI_DOWNLOAD_PATH/cfitsio-$CFITSIO_VERSION"
+    tar -xzf "$CFITSIO_CACHE_DIR/$CFITSIO_TARBALL" \
+        -C "$CI_DOWNLOAD_PATH/cfitsio-$CFITSIO_VERSION" --strip-components=1
+    mkdir -p "$CI_DOWNLOAD_PATH/cfitsio-$CFITSIO_VERSION.build"
+    cd "$CI_DOWNLOAD_PATH/cfitsio-$CFITSIO_VERSION.build"
+    cmake "../cfitsio-$CFITSIO_VERSION" -DCMAKE_INSTALL_PREFIX=$CI_INSTALL_PREFIX
     cmake --build . --config Release
     cmake --install .
 else
-    echo "Unknown runner OS: $RUNNER OS" 1>&2
+    echo "Unknown runner OS: $RUNNER_OS" 1>&2
     exit 1
 fi
 
