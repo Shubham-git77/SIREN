@@ -1,5 +1,5 @@
 import os
-from typing import Tuple, List, Any, Optional
+from typing import List, Optional
 import siren
 import collections
 
@@ -33,9 +33,6 @@ def _get_primary_types(primary_types):
         if p not in supported_primaries:
             raise ValueError(f"primary_types[{i}] \"{p}\" not supported")
 
-    if len(primary_types) == 0:
-        print("Warning: len(primary_types) == 0")
-
     return primary_types
 
 def _get_isoscalar(isoscalar):
@@ -43,7 +40,7 @@ def _get_isoscalar(isoscalar):
         isoscalar = True
 
     if not isoscalar:
-        raise ValueError("Non-isoscalar splines are not supported for CSMSDISSplines-v1.0")
+        raise ValueError("Non-isoscalar splines are not supported for HNLDISSplines-v1.0")
 
     return isoscalar
 
@@ -55,23 +52,7 @@ def _get_target_types(isoscalar, target_types):
         else:
             target_types = [siren.dataclasses.Particle.ParticleType.PPlus, siren.dataclasses.Particle.ParticleType.Neutron]
 
-    if len(target_types) == 0:
-        print("Warning: len(target_types) == 0")
-
     return target_types
-
-def _get_process_types(process_types):
-    if process_types is None:
-        process_types = ["CC", "NC"]
-
-    for i, p in enumerate(process_types):
-        if p not in processes:
-            raise ValueError(f"process_types[{i}] \"{p}\" not supported. Allowed proccesses are {processes}")
-
-    if len(process_types) == 0:
-        print("Warning: len(process_types) == 0")
-
-    return process_types
 
 
 def load_processes(
@@ -87,13 +68,12 @@ def load_processes(
     isoscalar = _get_isoscalar(isoscalar)
     target_types = _get_target_types(isoscalar, target_types)
 
-    neutrino_types = [t for t in primary_types if t in neutrinos]
-    antineutrino_types = [t for t in primary_types if t in antineutrinos]
+    if m4_MeV is None:
+        raise ValueError("m4_MeV requires a floating point number but is currently set to None")
 
     m4_str = f"{int(m4_MeV):07d}"
-    m4_GeV = m4_GeV = float(m4_MeV)*1e-3
+    m4_GeV = float(m4_MeV) * 1e-3
 
-    primary_processes = []
     primary_processes_dict = collections.defaultdict(list)
 
     for primary in primary_types:
@@ -109,9 +89,6 @@ def load_processes(
                                                      min_Q2,
                                                      [primary],
                                                      target_types)
-            primary_processes.append(xs)
             primary_processes_dict[primary].append(xs)
-        else:
-            pass
 
     return dict(primary_processes_dict), {}
