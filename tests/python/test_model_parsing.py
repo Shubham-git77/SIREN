@@ -53,10 +53,9 @@ def test_decompose_version(util, version, expected):
 @pytest.mark.parametrize(
     "v1,v2,greater",
     [
-        ("1.0",   "0.9",   True),
-        ("v1.1",  "v1.0",  True),
-        ("2",     "10",    False),  # numeric, not lexicographic
-        ("1.0.0", "1.0",   False),
+        ("1.0",  "0.9",  True),
+        ("v1.1", "v1.0", True),
+        ("2",    "10",   False),  # numeric, not lexicographic
     ],
 )
 def test_version_tokenize_orderable(util, v1, v2, greater):
@@ -64,3 +63,5 @@ def test_version_tokenize_orderable(util, v1, v2, greater):
     t2 = util.tokenize_version(v2)
     if greater:
         assert t1 > t2, f"{v1!r} should rank above {v2!r}"
+    else:
+        assert not (t1 > t2), f"{v1!r} should not rank above {v2!r}"

@@ -19,6 +19,24 @@ def _has_resource(installed_resources_root: Path, kind: str, name: str) -> bool:
     return (installed_resources_root / kind / name).exists()
 
 
+# Resources that have shipped with siren long enough that their absence
+# from a built install is a packaging regression, not a stale checkout.
+@pytest.mark.parametrize(
+    "kind,name",
+    [
+        ("detectors", "IceCube"),
+        ("detectors", "MINERvA"),
+        ("detectors", "MiniBooNE"),
+        ("fluxes", "BNB"),
+        ("fluxes", "NUMI"),
+    ],
+)
+def test_canonical_resource_present(installed_resources_root, kind, name):
+    assert (installed_resources_root / kind / name).exists(), (
+        f"{kind}/{name} missing from installed siren - packaging regression?"
+    )
+
+
 @pytest.mark.parametrize(
     "kind,name",
     [
@@ -39,7 +57,7 @@ def test_detector_model_path_resolution(utilities, installed_resources_root, kin
 
 
 def test_unknown_detector_raises(utilities):
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         utilities.get_detector_model_path("NoSuchDetector-v1")
 
 
@@ -69,16 +87,10 @@ def test_load_detector_returns_built_model(utilities, installed_resources_root):
 def test_load_flux_t2k_kaons(utilities, installed_resources_root, tmp_path):
     if not _has_resource(installed_resources_root, "fluxes", "T2K_Kaons"):
         pytest.skip("installed siren has no fluxes/T2K_Kaons")
-    # Mirror the source files into tmp so load_flux's output stays out of site-packages.
+    # Mirror the source data into tmp so flux.py's output stays out of site-packages.
     src = installed_resources_root / "fluxes" / "T2K_Kaons" / "T2K_Kaons-v1.0"
-    work = tmp_path / "T2K_Kaons-v1.0"
-    work.mkdir(parents=True)
-    for fname in ("kaon-flux-data.dat", "ratio.dat", "flux.py"):
-        (work / fname).write_bytes((src / fname).read_bytes())
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("t2k_flux_test", str(work / "flux.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    out = mod.load_flux("numu_PLUS", abs_flux_dir=str(work))
+    for fname in ("kaon-flux-data.dat", "ratio.dat"):
+        (tmp_path / fname).write_bytes((src / fname).read_bytes())
+    out = utilities.load_flux("T2K_Kaons", "numu_PLUS", abs_flux_dir=str(tmp_path))
     assert Path(out).exists()
     assert Path(out).stat().st_size > 0
