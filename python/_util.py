@@ -312,13 +312,7 @@ _UNVERSIONED_MODEL_PATTERN = (
 _MODEL_PATTERN = (
     r"""
     (?P<model_name>
-        (?:
-            [a-zA-Z0-9]+
-        )
-        |
-        (?:
-            (?:[a-zA-Z0-9]+(?:[-_\.][a-zA-Z0-9]+)*(?:[-_\.][a-zA-Z]+[a-zA-Z0-9]*))?
-        )
+        [a-zA-Z0-9]+(?:(?:-(?!v?[0-9])|[_\.])[a-zA-Z0-9]+)*
     )
     (?:
         -
@@ -762,6 +756,14 @@ def get_resource_loader(resource_type, resource_name):
             continue
         setattr(functor, key, getattr(resource_module, key))
     return functools.update_wrapper(functor, loader)
+
+
+def get_tabulated_flux_model_path(model_name, must_exist=True):
+    return _get_model_path(model_name, prefix=_resource_folder_by_name["flux"], is_file=False, must_exist=must_exist)
+
+
+def get_tabulated_flux_file(model_name, tag, must_exist=True):
+    return load_resource("flux", model_name, tag)
 
 
 def load_resource(resource_type, resource_name, *args, **kwargs):
