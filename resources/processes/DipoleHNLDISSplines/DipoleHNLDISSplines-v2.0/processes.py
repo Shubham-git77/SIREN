@@ -40,7 +40,7 @@ def _get_isoscalar(isoscalar):
         isoscalar = True
 
     if not isoscalar:
-        raise ValueError("Non-isoscalar splines are not supported for DipoleHNLDISSplines-v1.0")
+        raise ValueError("Non-isoscalar splines are not supported for DipoleHNLDISSplines-v2.0")
 
     return isoscalar
 
@@ -60,7 +60,6 @@ def load_processes(
     target_types: Optional[List[siren.dataclasses.Particle.ParticleType]] = None,
     isoscalar: Optional[bool] = True,
     m4_MeV: Optional[float] = None,
-    min_Q2: Optional[float] = 1.0,
     dipole_couplings: Optional[List[float]] = None,
     ):
 
