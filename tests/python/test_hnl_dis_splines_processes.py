@@ -21,10 +21,17 @@ HNL_REL_DIRS = [
 def processes_mod(request, processes_dir):
     rel = request.param
     path = processes_dir / rel / "processes.py"
+    if not path.exists():
+        raise FileNotFoundError(f"Could not find processes.py at {path}")
+
     spec = importlib.util.spec_from_file_location(
         f"_test_processes_{rel.replace('/', '_').replace('.', '_')}",
         str(path),
     )
+    if spec is None:
+        raise ImportError(f"Could not create import spec for {path}")
+    if spec.loader is None:
+        raise ImportError(f"Import spec for {path} has no loader")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
