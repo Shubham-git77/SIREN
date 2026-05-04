@@ -17,6 +17,9 @@ LIST (APPEND distributions_SOURCES
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/energy/Monoenergetic.cxx
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/energy/PiDARNuEDistribution.cxx
 
+    ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/energy_direction/PrimaryEnergyDirectionDistribution.cxx
+    ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/energy_direction/Tabulated2DFluxDistribution.cxx
+
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/helicity/PrimaryNeutrinoHelicityDistribution.cxx
 
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/mass/PrimaryMass.cxx
@@ -80,6 +83,7 @@ package_add_test(UnitTest_PrimaryExternalDistribution ${PROJECT_SOURCE_DIR}/proj
 package_add_test(UnitTest_WeightableDistribution ${PROJECT_SOURCE_DIR}/projects/distributions/private/test/WeightableDistribution_TEST.cxx)
 package_add_test(UnitTest_SphereVolumePositionDistribution ${PROJECT_SOURCE_DIR}/projects/distributions/private/test/SphereVolumePositionDistribution_TEST.cxx)
 package_add_test(UnitTest_CylinderVolumePositionDistribution ${PROJECT_SOURCE_DIR}/projects/distributions/private/test/CylinderVolumePositionDistribution_TEST.cxx)
+package_add_test(UnitTest_Tabulated2DFluxDistribution ${PROJECT_SOURCE_DIR}/projects/distributions/private/test/Tabulated2DFluxDistribution_TEST.cxx)
 
 pybind11_add_module(distributions ${PROJECT_SOURCE_DIR}/projects/distributions/private/pybindings/distributions.cxx)
 target_link_libraries(distributions PRIVATE SIREN)
