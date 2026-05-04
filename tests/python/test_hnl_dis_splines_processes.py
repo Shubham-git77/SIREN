@@ -12,8 +12,8 @@ import pytest
 HNL_REL_DIRS = [
     "HNLDISSplines/HNLDISSplines-v1.0",
     "HNLDISSplines/HNLDISSplines-v2.0",
-    "DipoleHNLDISSplines/DipoleHNLDISSpline-v1.0",
-    "DipoleHNLDISSplines/DipoleHNLDISSpline-v2.0",
+    "DipoleHNLDISSplines/DipoleHNLDISSplines-v1.0",
+    "DipoleHNLDISSplines/DipoleHNLDISSplines-v2.0",
 ]
 
 
