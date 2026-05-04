@@ -29,6 +29,7 @@ LIST (APPEND distributions_SOURCES
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/vertex/DecayRangePositionDistribution.cxx
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/vertex/OrientedCylinderPositionDistribution.cxx
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/vertex/CylinderVolumePositionDistribution.cxx
+    ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/vertex/SphereVolumePositionDistribution.cxx
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/vertex/ColumnDepthPositionDistribution.cxx
     ${PROJECT_SOURCE_DIR}/projects/distributions/private/primary/vertex/FixedTargetPositionDistribution.cxx
 
@@ -72,6 +73,8 @@ install(DIRECTORY "${PROJECT_SOURCE_DIR}/projects/distributions/public/"
 package_add_test(UnitTest_PrimaryDirectionDistribution ${PROJECT_SOURCE_DIR}/projects/distributions/private/test/PrimaryDirectionDistribution_TEST.cxx)
 package_add_test(UnitTest_PrimaryEnergyDistribution ${PROJECT_SOURCE_DIR}/projects/distributions/private/test/PrimaryEnergyDistribution_TEST.cxx)
 package_add_test(UnitTest_WeightableDistribution ${PROJECT_SOURCE_DIR}/projects/distributions/private/test/WeightableDistribution_TEST.cxx)
+package_add_test(UnitTest_SphereVolumePositionDistribution ${PROJECT_SOURCE_DIR}/projects/distributions/private/test/SphereVolumePositionDistribution_TEST.cxx)
+package_add_test(UnitTest_CylinderVolumePositionDistribution ${PROJECT_SOURCE_DIR}/projects/distributions/private/test/CylinderVolumePositionDistribution_TEST.cxx)
 
 pybind11_add_module(distributions ${PROJECT_SOURCE_DIR}/projects/distributions/private/pybindings/distributions.cxx)
 target_link_libraries(distributions PRIVATE SIREN)
