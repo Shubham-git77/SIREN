@@ -113,22 +113,25 @@ include(pybind11)
 
 # load project dependencies
 include(rk)
+include(crundec3)
 if(TARGET rk_static)
     apply_siren_compile_options(rk_static)
 endif()
 if(TARGET rk_shared)
     apply_siren_compile_options(rk_shared)
 endif()
+if(TARGET crundec_static)
+    apply_siren_compile_options(crundec_static)
+endif()
 include(cereal)
 if(TARGET cereal)
     apply_siren_compile_options(cereal)
 endif()
+set(DELABELLA_BUILD_STATIC ON CACHE BOOL "Build delabella static library" FORCE)
+set(DELABELLA_BUILD_SHARED OFF CACHE BOOL "Build delabella shared library" FORCE)
 include(delabella)
 if(TARGET delabella_static)
     apply_siren_compile_options(delabella_static)
-endif()
-if(TARGET delabella_shared)
-    apply_siren_compile_options(delabella_shared)
 endif()
 include(CFITSIO)
 if(TARGET CFITSIO::cfitsio)
@@ -186,7 +189,6 @@ endif()
 target_link_libraries(SIREN
     PRIVATE
     PUBLIC
-        delabella_shared
         photospline
         SIREN_utilities
         SIREN_serialization
@@ -203,7 +205,6 @@ target_link_libraries(SIREN
     PRIVATE
     PUBLIC
         photospline
-        delabella_shared
         SIREN_utilities
         SIREN_serialization
         SIREN_math
@@ -225,7 +226,6 @@ if(DEFINED SKBUILD_PLATLIB_DIR)
         message(STATUS "Setting SIREN install lib dir to: ${CI_INSTALL_PREFIX}/lib")
         message(STATUS "Setting SIREN install include dir to: ${CI_INSTALL_PREFIX}/include")
         install(TARGETS SIREN
-            delabella_shared
             SIREN_utilities
             SIREN_serialization
             SIREN_math
@@ -240,7 +240,6 @@ if(DEFINED SKBUILD_PLATLIB_DIR)
             PUBLIC_HEADER DESTINATION "${CI_INSTALL_PREFIX}/include")
     else()
         install(TARGETS SIREN
-            delabella_shared
             SIREN_utilities
             SIREN_serialization
             SIREN_math
@@ -256,7 +255,6 @@ if(DEFINED SKBUILD_PLATLIB_DIR)
     endif()
 else()
     install(TARGETS SIREN
-        delabella_shared
         SIREN_utilities
         SIREN_serialization
         SIREN_math
