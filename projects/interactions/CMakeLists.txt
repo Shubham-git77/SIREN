@@ -9,9 +9,12 @@ LIST (APPEND interactions_SOURCES
     ${PROJECT_SOURCE_DIR}/projects/interactions/private/DarkNewsCrossSection.cxx
     ${PROJECT_SOURCE_DIR}/projects/interactions/private/DarkNewsDecay.cxx
     ${PROJECT_SOURCE_DIR}/projects/interactions/private/DISFromSpline.cxx
+    ${PROJECT_SOURCE_DIR}/projects/interactions/private/HNLDipoleDecay.cxx
     ${PROJECT_SOURCE_DIR}/projects/interactions/private/HNLDipoleFromTable.cxx
     ${PROJECT_SOURCE_DIR}/projects/interactions/private/HNLDISFromSpline.cxx
     ${PROJECT_SOURCE_DIR}/projects/interactions/private/HNLDipoleDISFromSpline.cxx
+    ${PROJECT_SOURCE_DIR}/projects/interactions/private/HNLDecay.cxx
+    ${PROJECT_SOURCE_DIR}/projects/interactions/private/ElectroweakDecay.cxx
     ${PROJECT_SOURCE_DIR}/projects/interactions/private/ElasticScattering.cxx
     ${PROJECT_SOURCE_DIR}/projects/interactions/private/DummyCrossSection.cxx
     ${PROJECT_SOURCE_DIR}/projects/interactions/private/pyDarkNewsCrossSection.cxx
@@ -58,6 +61,7 @@ install(DIRECTORY "${PROJECT_SOURCE_DIR}/projects/interactions/public/"
 package_add_test(UnitTest_DISFromSpline ${PROJECT_SOURCE_DIR}/projects/interactions/private/test/DISFromSpline_TEST.cxx)
 package_add_test(UnitTest_DipoleFromTable ${PROJECT_SOURCE_DIR}/projects/interactions/private/test/DipoleFromTable_TEST.cxx)
 package_add_test(UnitTest_HNLDISFromSpline ${PROJECT_SOURCE_DIR}/projects/interactions/private/test/HNLDISFromSpline_TEST.cxx)
+package_add_test(UnitTest_HNLDecay ${PROJECT_SOURCE_DIR}/projects/interactions/private/test/HNLDecay_TEST.cxx)
 #package_add_test(UnitTest_ElasticScattering ${PROJECT_SOURCE_DIR}/projects/interactions/private/test/ElasticScattering_TEST.cxx)
 
 pybind11_add_module(interactions ${PROJECT_SOURCE_DIR}/projects/interactions/private/pybindings/interactions.cxx)

@@ -34,6 +34,7 @@
 #include "SIREN/interactions/InteractionCollection.h"
 #include "SIREN/interactions/CrossSection.h"
 #include "SIREN/interactions/HNLDipoleFromTable.h"
+#include "SIREN/interactions/HNLDipoleDecay.h"
 #include "SIREN/interactions/Decay.h"
 
 using namespace siren::math;
@@ -270,11 +271,9 @@ TEST(Injector, Generation)
     secondary_decay_inj_process->SetPrimaryType(ParticleType::N4);
     secondary_decay_phys_process->SetPrimaryType(ParticleType::N4);
 
-    // Secondary cross sections: neutrissimo decay
-    // Assume dirac HNL for now
-    // TODO: NeutrissimoDecay was removed; replace with the new HNL decay class
-    // when feat/hnl-decays-hadronic lands.
-    std::vector<std::shared_ptr<Decay>> sec_decays = {};
+    // Secondary decay: dipole portal HNL (N4)
+    std::shared_ptr<HNLDipoleDecay> sec_decay = std::make_shared<HNLDipoleDecay>(hnl_mass, dipole_coupling_vec, HNLDipoleDecay::ChiralNature::Majorana);
+    std::vector<std::shared_ptr<Decay>> sec_decays = {sec_decay};
     std::shared_ptr<InteractionCollection> secondary_interactions = std::make_shared<InteractionCollection>(ParticleType::N4, sec_decays);
     secondary_decay_inj_process->SetInteractions(secondary_interactions);
     secondary_decay_phys_process->SetInteractions(secondary_interactions);
