@@ -999,6 +999,7 @@ def SaveEvents(events,
                   "parent_idx"]:
             datasets[k].append([])
         # loop over interactions
+        id = -1  # guard: if event.tree is empty, num_interactions appends 0
         for id, datum in enumerate(event.tree):
             datasets["vertex"][-1].append(np.array(datum.record.interaction_vertex,dtype=float))
 
@@ -1030,6 +1031,7 @@ def SaveEvents(events,
             # secondary particle stuff
             datasets["secondary_types"][-1].append([])
             datasets["secondary_momenta"][-1].append([])
+            isec = -1  # guard: if no secondaries, num_secondaries appends 0
             for isec, (sec_type, sec_momenta) in enumerate(zip(datum.record.signature.secondary_types,
                                                                datum.record.secondary_momenta)):
                 datasets["secondary_types"][-1][-1].append(int(sec_type))
@@ -1052,4 +1054,3 @@ def SaveEvents(events,
 # Load events from the custom SIREN event format
 def LoadEvents(filename):
     return _dataclasses.LoadInteractionTrees(filename)
-

@@ -62,8 +62,14 @@ class SIREN_Controller:
         self.events = []
 
         # Find the density and materials files
-        materials_file = _util.get_material_model_path(experiment)
-        detector_model_file = _util.get_detector_model_path(experiment)
+                # Find the density and materials files
+                #change in code 
+        import os
+
+        base_path = _util.get_detector_model_path(experiment)
+
+        materials_file = os.path.join(base_path, "materials.dat")
+        detector_model_file = os.path.join(base_path, "densities.dat")
 
         self.detector_model = _detector.DetectorModel()
         self.detector_model.LoadMaterialModel(materials_file)
@@ -291,7 +297,11 @@ class SIREN_Controller:
         """
         :return: identified fiducial volume for the experiment, None if not found
         """
-        detector_model_file = _util.get_detector_model_path(self.experiment)
+        import os
+        
+#change in code
+        base_path = _util.get_detector_model_path(self.experiment)
+        detector_model_file = os.path.join(base_path, "densities.dat")
         with open(detector_model_file) as file:
             fiducial_line = None
             detector_line = None

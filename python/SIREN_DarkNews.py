@@ -17,8 +17,8 @@ from siren import _util
 from siren.DNModelContainer import ModelContainer
 
 # DarkNews methods
+import DarkNews
 from DarkNews import phase_space
-from DarkNews.processes import *
 from DarkNews.nuclear_tools import NuclearTarget
 from DarkNews.integrands import get_decay_momenta_from_vegas_samples
 
@@ -426,7 +426,7 @@ class PyDarkNewsCrossSection(DarkNewsCrossSection):
             z = zmin
             while z < zmax:
                 Q2 = Q2min + z * (Q2max - Q2min)
-                dxsec = self.ups_case.diff_xsec_Q2(E, Q2).item()
+                dxsec = float(np.real(self.ups_case.diff_xsec_Q2(E, Q2)))
                 self.differential_cross_section_table = np.append(
                     self.differential_cross_section_table,
                     [[E, z, dxsec]],
@@ -539,12 +539,12 @@ class PyDarkNewsCrossSection(DarkNewsCrossSection):
         if type(arg1) == dataclasses.InteractionRecord:
             interaction = arg1
             # Calculate Q2 assuming we are in the target rest frame
-            m1sq = interaction.primary_momentum[0] ** 2 - np.sum(
+            m1sq = max(0.0, interaction.primary_momentum[0] ** 2 - np.sum(
                 [p**2 for p in interaction.primary_momentum[1:]]
-            )
-            m3sq = interaction.secondary_momenta[0][0] ** 2 - np.sum(
+            ))  # clamp: E²-|p|² can be slightly negative due to float precision
+            m3sq = max(0.0, interaction.secondary_momenta[0][0] ** 2 - np.sum(
                 [p**2 for p in interaction.secondary_momenta[0][1:]]
-            )
+            ))  # clamp: same reason
             p1p3 = interaction.primary_momentum[0] * interaction.secondary_momenta[0][
                 0
             ] - np.sum(
@@ -554,7 +554,7 @@ class PyDarkNewsCrossSection(DarkNewsCrossSection):
                     interaction.secondary_momenta[0][1:],
                 )
             )
-            Q2 = -(m1sq + m3sq - 2 * p1p3)
+            Q2 = max(0.0, -(m1sq + m3sq - 2 * p1p3))  # clamp: numerical noise can make Q2 slightly negative
             energy = interaction.primary_momentum[0]
         else:
             primary = arg1
@@ -581,7 +581,7 @@ class PyDarkNewsCrossSection(DarkNewsCrossSection):
                 return val
 
         # If we have reached this block, we must compute the differential cross section using DarkNews
-        dxsec = self.ups_case.diff_xsec_Q2(energy, Q2).item()
+        dxsec = float(np.real(self.ups_case.diff_xsec_Q2(energy, Q2)))
         return dxsec
 
     def TargetMass(self, target_type):
@@ -632,7 +632,7 @@ class PyDarkNewsCrossSection(DarkNewsCrossSection):
             return val
 
         # If we have reached this block, we must compute the cross section using DarkNews
-        xsec = self.ups_case.total_xsec(energy)
+        xsec = float(np.real(self.ups_case.total_xsec(energy)))
         self.total_cross_section_table = np.append(
             self.total_cross_section_table, [[energy, xsec]], axis=0
         )
@@ -655,10 +655,174 @@ class PyDarkNewsCrossSection(DarkNewsCrossSection):
             self.ups_case.m_ups,
             self.ups_case.MA,
         )
+        
+
+import scipy.integrate as _scipy_integrate
 
 
-# A class representing a single decay_case DarkNews class
-# Only handles methods concerning the decay part
+# ─────────────────────────────────────────────────────────────────────────────
+# Minimal particle / target stubs
+# Must implement __eq__(int) because SIREN_DarkNews.py line 618 does:
+#   if int(primary) != self.ups_case.nu_projectile:
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _PDGParticle:
+    """
+    Lightweight particle stub that satisfies the duck-typed ups_case interface
+    expected by PyDarkNewsCrossSection.
+
+    Critical: __eq__ must accept bare ints so that line 618
+        int(primary) != self.ups_case.nu_projectile
+    evaluates correctly.
+    """
+    def __init__(self, pdgid: int, mass: float = 0.0, name: str = ""):
+        self.pdgid = pdgid
+        self.mass  = mass
+        self.name  = name
+
+    # ── comparison ──────────────────────────────────────────────────────────
+    def __eq__(self, other):
+        if isinstance(other, int):
+            return self.pdgid == other
+        return self.pdgid == getattr(other, "pdgid", None)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    # int(particle) → pdgid  (used by line 618)
+    def __int__(self):
+        return self.pdgid
+
+    def __repr__(self):
+        return f"_PDGParticle(pdgid={self.pdgid}, name={self.name!r})"
+
+
+class _NuclearTarget:
+
+    def __init__(
+        self,
+        pdgid: int,
+        mass: float,
+        name: str,
+        scattering_regime: str = "coherent",
+    ):
+        self.pdgid             = pdgid
+        self.mass              = mass
+        self.name              = name
+        self.scattering_regime = scattering_regime
+
+    def __repr__(self):
+        return f"_NuclearTarget(name={self.name!r}, pdgid={self.pdgid})"
+
+
+class VectorPortalUpsCase:
+
+    def __init__(
+        self,
+        m_chi: float,
+        m_chi_prime: float,
+        m_V: float,
+        g_D: float,
+        epsilon: float,
+        *,
+        pdgid_chi: int         = 5917,
+        pdgid_chi_prime: int   = 5918,
+        nuclear_pdgid: int     = 1000060120,
+        nuclear_mass: float    = 11.178,      # C12 in GeV
+        nuclear_name: str      = "C12",
+        scattering_regime: str = "coherent",
+        A: int                 = 12,
+    ):
+
+        self.nu_projectile  = _PDGParticle(pdgid_chi,       m_chi,       "chi")
+        self.nu_upscattered = _PDGParticle(pdgid_chi_prime, m_chi_prime, "chi_prime")
+        self.nuclear_target = _NuclearTarget(
+            nuclear_pdgid, nuclear_mass, nuclear_name, scattering_regime
+        )
+
+        self.MA              = nuclear_mass    # target mass [GeV]
+        self.m_ups           = m_chi_prime     # upscattered mass [GeV]
+        self.m_chi           = m_chi
+        self.m_V             = m_V
+        self.g_D             = g_D
+        self.epsilon         = epsilon
+        self.A               = A
+
+        self.h_upscattered     = 1             # helicity convention (scalar χ → +1)
+        self.scattering_regime = scattering_regime
+        self.Ethreshold = self._compute_threshold()
+
+    def _compute_threshold(self) -> float:
+        """Minimum lab-frame χ energy for χ N → χ' N kinematics."""
+        m1, m3, M = self.m_chi, self.m_ups, self.MA
+        return ((m3 + M) ** 2 - m1 ** 2 - M ** 2) / (2.0 * M)
+
+    def _helm_F2(self, Q2: float) -> float:
+
+        Q    = np.sqrt(max(Q2, 0.0))          # GeV
+        Qfm  = Q / 0.197327                   # fm⁻¹
+        s    = 0.9                             # fm  (skin thickness)
+        r0sq = max((1.2 * self.A ** (1.0 / 3.0)) ** 2 - 5.0 * s ** 2, 0.0)
+        Qr   = Qfm * np.sqrt(r0sq)
+        # Spherical Bessel j₁(x)/x = (sin x − x cos x)/x³
+        if Qr < 1.0e-6:
+            j1_over_Qr = 1.0 / 3.0
+        else:
+            j1_over_Qr = (np.sin(Qr) - Qr * np.cos(Qr)) / Qr ** 3
+        return (3.0 * j1_over_Qr) ** 2 * np.exp(-(Qfm * s) ** 2)
+
+    def _dsigma_dQ2(self, E: float, Q2: float) -> float:
+
+        m1, m3       = self.m_chi, self.m_ups
+        M, mV        = self.MA, self.m_V
+        gD, eps      = self.g_D, self.epsilon
+        alpha        = 1.0 / 137.036          # fine-structure constant
+        GeV2_to_cm2  = 3.8938e-28             # ℏ²c² in cm²·GeV²
+
+        s    = m1 ** 2 + M ** 2 + 2.0 * M * E
+        flux = (s - M ** 2) ** 2              # lab-frame flux squared
+
+        # Four-momentum transfer squared (spacelike → Q² > 0)
+        Delta_m2 = m3 ** 2 - m1 ** 2
+        numerator = 2.0 * M ** 2 * (2.0 * E * M - Q2 - Delta_m2)
+
+        # Guard against unphysical kinematics
+        if numerator <= 0.0 or flux <= 0.0:
+            return 0.0
+
+        propagator = 1.0 / (Q2 + mV ** 2) ** 2
+        M2 = gD ** 2 * 4.0 * np.pi * alpha * eps ** 2 * numerator * propagator
+
+        dsig = M2 * self._helm_F2(Q2) / (16.0 * np.pi * flux)
+        return max(0.0, dsig) * GeV2_to_cm2
+
+
+    def diff_xsec_Q2(self, E: float, Q2: float) -> np.ndarray:
+       
+        return np.array(self._dsigma_dQ2(E, Q2))
+
+    def total_xsec(self, E: float) -> float:
+ 
+        Q2min = phase_space.upscattering_Q2min(E, self.m_ups, self.MA)
+        Q2max = phase_space.upscattering_Q2max(E, self.m_ups, self.MA)
+        if Q2max <= Q2min:
+            return 0.0
+        result, _ = _scipy_integrate.quad(
+            lambda q2: self._dsigma_dQ2(E, q2),
+            Q2min,
+            Q2max,
+            limit=80,
+            epsrel=1e-4,
+        )
+        return max(0.0, result)
+
+    def __repr__(self):
+        return (
+            f"VectorPortalUpsCase("
+            f"m_chi={self.m_chi}, m_chi'={self.m_ups}, "
+            f"m_V={self.m_V}, g_D={self.g_D}, ε={self.epsilon})"
+        )               
+
 class PyDarkNewsDecay(DarkNewsDecay):
     def __init__(self, dec_case, table_dir=None):
         DarkNewsDecay.__init__(self)  # C++ constructor
@@ -693,11 +857,9 @@ class PyDarkNewsDecay(DarkNewsDecay):
                 print("Directory '%s' cannot be created" % self.table_dir)
                 exit(0)
 
-        # Look in table dir for existing decay integrator + normalization info
         if table_dir_exists:
             self.SetIntegratorAndNorm()
 
-    # serialization method
     def get_representation(self):
         return {"decay_integrator":self.decay_integrator,
                 "decay_norm":self.decay_norm,
@@ -755,7 +917,7 @@ class PyDarkNewsDecay(DarkNewsDecay):
         # Momentum variables of HNL necessary for calculating decay phase space
         PN = np.array(record.primary_momentum)
 
-        if type(self.dec_case) == FermionSinglePhotonDecay:
+        if type(self.dec_case) == DarkNews.processes.FermionSinglePhotonDecay:
             gamma_idx = 0
             for secondary in record.signature.secondary_types:
                 if secondary == dataclasses.Particle.ParticleType.Gamma:
@@ -768,7 +930,7 @@ class PyDarkNewsDecay(DarkNewsDecay):
             Pgamma = np.array(record.secondary_momenta[gamma_idx])
             momenta = np.expand_dims(PN, 0), np.expand_dims(Pgamma, 0)
 
-        elif type(self.dec_case) == FermionDileptonDecay:
+        elif type(self.dec_case) == DarkNews.processes.FermionDileptonDecay:
             lepminus_idx = -1
             lepplus_idx = -1
             nu_idx = -1
@@ -816,7 +978,7 @@ class PyDarkNewsDecay(DarkNewsDecay):
             return 0
         if self.total_width is None:
             # Need to set the total width
-            if type(self.dec_case) == FermionDileptonDecay and (
+            if type(self.dec_case) == DarkNews.processes.FermionDileptonDecay and (
                 self.dec_case.vector_off_shell and self.dec_case.scalar_off_shell
             ):
                 # total width calculation requires evaluating an integral
@@ -857,9 +1019,9 @@ class PyDarkNewsDecay(DarkNewsDecay):
         return ret
 
     def DensityVariables(self):
-        if type(self.dec_case) == FermionSinglePhotonDecay:
+        if type(self.dec_case) == DarkNews.processes.FermionSinglePhotonDecay:
             return "cost"
-        elif type(self.dec_case) == FermionDileptonDecay:
+        elif type(self.dec_case) == DarkNews.processes.FermionDileptonDecay:
             if self.dec_case.vector_on_shell and self.dec_case.scalar_on_shell:
                 print("Can't have both the scalar and vector on shell")
                 exit(0)
@@ -919,7 +1081,7 @@ class PyDarkNewsDecay(DarkNewsDecay):
 
         secondaries = record.GetSecondaryParticleRecords()
 
-        if type(self.dec_case) == FermionSinglePhotonDecay:
+        if type(self.dec_case) == DarkNews.processes.FermionSinglePhotonDecay:
             gamma_idx = 0
             for secondary in record.signature.secondary_types:
                 if secondary == dataclasses.Particle.ParticleType.Gamma:
@@ -934,7 +1096,7 @@ class PyDarkNewsDecay(DarkNewsDecay):
             secondaries[nu_idx].four_momentum = np.squeeze(four_momenta["P_decay_N_daughter"])
             secondaries[nu_idx].mass = 0
 
-        elif type(self.dec_case) == FermionDileptonDecay:
+        elif type(self.dec_case) == DarkNews.processes.FermionDileptonDecay:
             lepminus_idx = -1
             lepplus_idx = -1
             nu_idx = -1
@@ -968,3 +1130,410 @@ class PyDarkNewsDecay(DarkNewsDecay):
                 np.squeeze(four_momenta["P_decay_N_daughter"])
             )
         return record
+
+
+class DarkPrimakoffUpsCase:
+    """
+    ups_case for  φ(k) + N(p) → γ(k') + N(p')  via t-channel Z'.
+
+    Physics: arXiv:2110.11944 Appendix C, Eqs. (C2)-(C3).
+
+    Matrix element squared (scalar φ, same formula as pseudoscalar with m_a→m_φ):
+
+        |M|² = g²_n λ² / t  ×
+               [2m²_N(m²_φ − 2s − t) + 2m⁴_N − 2m²_φ(s+t) + m⁴_φ + 2s² + 2st + t²]
+               ─────────────────────────────────────────────────────────────────────────
+                                     2(t − m²_Z')²
+
+    where t < 0 is the spacelike Mandelstam variable (we use t = −Q² < 0 here,
+    consistent with Appendix C's sign convention).
+
+    Differential cross section (Eq. C3):
+
+        dσ/dt = Z² / [16π λ(s, m²_φ, m²_N)] × |M|² × F²_N(t)
+
+    where λ(s,m²_φ,m²_N) = [s − (m_φ+m_N)²][s − (m_φ−m_N)²] is the
+    Källén flux factor and F_N is the Helm nuclear form factor.
+
+    PyDarkNewsCrossSection interface attributes accessed:
+        .nu_projectile   (_PDGParticle, pdgid=5902 for φ)
+        .nu_upscattered  (_PDGParticle, pdgid=22 for γ)
+        .nuclear_target  (_NuclearTarget)
+        .MA, .m_ups, .h_upscattered, .Ethreshold, .scattering_regime
+        .diff_xsec_Q2(E, Q2)  →  np.ndarray scalar
+        .total_xsec(E)        →  float
+
+    Note on variable naming: PyDarkNewsCrossSection uses Q2 as its integration
+    variable and calls phase_space.upscattering_Q2min/max. For this process
+    Q2 ≡ −t (positive, spacelike), so we convert internally: t = −Q2.
+
+    Benchmark (Table I, scalar scenario):
+        m_Z' = 49 MeV,  m_φ = 1 MeV,  coupling product g_μ g_n λ = 2.2e-8 MeV⁻¹
+    Here we expose g_n (quark/nuclear coupling) and lam (the λ coupling) separately
+    since g_μ enters only in the production flux, not the detector cross section.
+    """
+
+    def __init__(
+        self,
+        m_phi: float,         # scalar φ mass [GeV]
+        m_Zprime: float,      # Z' mediator mass [GeV]
+        g_n: float,           # Z' nuclear coupling  (dimensionless)
+        lam: float,           # φ-Z'-γ coupling  [GeV⁻¹]
+        *,
+        pdgid_phi: int         = 5902,
+        nuclear_pdgid: int     = 1000060120,   # C12
+        nuclear_mass: float    = 11.178,       # GeV
+        nuclear_name: str      = "C12",
+        Z: int                 = 6,            # atomic number for form factor prefactor
+        A: int                 = 12,           # mass number for Helm FF
+        scattering_regime: str = "coherent",
+    ):
+        # ── particle stubs ──────────────────────────────────────────────────
+        self.nu_projectile  = _PDGParticle(pdgid_phi, m_phi,  "phi")
+        self.nu_upscattered = _PDGParticle(22,        0.0,    "gamma")   # photon
+        self.nuclear_target = _NuclearTarget(
+            nuclear_pdgid, nuclear_mass, nuclear_name, scattering_regime
+        )
+
+        # ── physics parameters ───────────────────────────────────────────────
+        self.m_phi           = m_phi
+        self.m_Zprime        = m_Zprime
+        self.g_n             = g_n
+        self.lam             = lam            # [GeV⁻¹]
+        self.MA              = nuclear_mass
+        self.m_ups           = 0.0            # outgoing photon mass
+        self.Z               = Z
+        self.A               = A
+        self.h_upscattered   = 0              # photon, helicity undefined → 0
+        self.scattering_regime = scattering_regime
+
+        # ── kinematic threshold ──────────────────────────────────────────────
+        # Minimum φ lab energy for φ N → γ N:
+        # s_min = (m_φ + m_N)²  →  E_thr = [(m_φ + m_N)² − m_φ² − m_N²] / 2m_N
+        self.Ethreshold = (
+            (m_phi + nuclear_mass) ** 2 - m_phi ** 2 - nuclear_mass ** 2
+        ) / (2.0 * nuclear_mass)
+
+        # ── unit conversion ──────────────────────────────────────────────────
+        self._GeV2_to_cm2 = 3.8938e-28        # ℏ²c² in cm²·GeV²
+
+    # ── Helm form factor ─────────────────────────────────────────────────────
+
+    def _helm_F2(self, Q2: float) -> float:
+
+        Q   = np.sqrt(max(Q2, 0.0))
+        Qfm = Q / 0.197327
+        s   = 0.9
+        r0sq = max((1.2 * self.A ** (1.0 / 3.0)) ** 2 - 5.0 * s ** 2, 0.0)
+        Qr  = Qfm * np.sqrt(r0sq)
+        if Qr < 1e-6:
+            j1_over_Qr = 1.0 / 3.0
+        else:
+            j1_over_Qr = (np.sin(Qr) - Qr * np.cos(Qr)) / Qr ** 3
+        return (3.0 * j1_over_Qr) ** 2 * np.exp(-(Qfm * s) ** 2)
+
+    # ── matrix element squared  (Eq. C2, scalar case) ────────────────────────
+
+    def _M2(self, s: float, t: float) -> float:
+        """
+        |M|²  for  φ N → γ N  (Eq. C2 with m_a → m_φ).
+
+        t is the Mandelstam variable, t < 0  (spacelike, following paper sign).
+        """
+        mN  = self.MA
+        mphi = self.m_phi
+        mZp  = self.m_Zprime
+        gn   = self.g_n
+        lam  = self.lam
+
+        # Numerator of Eq. C2
+        num = (
+            2.0 * mN**2 * (mphi**2 - 2.0*s - t)
+            + 2.0 * mN**4
+            - 2.0 * mphi**2 * (s + t)
+            + mphi**4
+            + 2.0 * s**2
+            + 2.0 * s * t
+            + t**2
+        )
+
+        # Propagator denominator: (t − m²_Z')²
+        prop_denom = (t - mZp**2) ** 2
+
+        if prop_denom <= 0.0:
+            return 0.0
+
+        return gn**2 * lam**2 * num / (2.0 * (-t) * prop_denom)
+
+    # ── differential cross section ────────────────────────────────────────────
+
+    def _dsigma_dt(self, E: float, t: float) -> float:
+        """
+        dσ/dt  [cm²/GeV²]  in the nucleus rest frame.  (Eq. C3)
+
+        t < 0 (spacelike).  Returns 0 outside the physical region.
+        """
+        mN   = self.MA
+        mphi = self.m_phi
+
+        s = mphi**2 + mN**2 + 2.0 * mN * E
+
+        # Källén flux factor  λ(s, m²_φ, m²_N) = [s−(m_φ+m_N)²][s−(m_φ−m_N)²]
+        kallen = (
+            (s - (mphi + mN)**2) * (s - (mphi - mN)**2)
+        )
+        if kallen <= 0.0:
+            return 0.0
+
+        M2_val = self._M2(s, t)
+        if M2_val <= 0.0:
+            return 0.0
+
+        FF2 = self._helm_F2(-t)   # FF argument is Q² = −t > 0
+
+        dsig = (
+            self.Z**2
+            / (16.0 * np.pi * kallen)
+            * M2_val
+            * FF2
+        )
+        return max(0.0, dsig) * self._GeV2_to_cm2
+
+    # ── PyDarkNewsCrossSection public interface ───────────────────────────────
+    # PyDarkNewsCrossSection uses Q2 = −t  (positive convention) internally,
+    # so we convert: t = −Q2.
+
+    def diff_xsec_Q2(self, E: float, Q2: float) -> np.ndarray:
+        """
+        dσ/dQ²  returned as a 0-d numpy array.
+        PyDarkNewsCrossSection calls this at lines 429 and 584.
+        Q2 ≡ −t > 0.
+        """
+        t = -Q2
+        return np.array(self._dsigma_dt(E, t))
+
+    def total_xsec(self, E: float) -> float:
+        """
+        σ(E) [cm²] integrated over the physical Q² = −t range.
+        """
+        mN   = self.MA
+        mphi = self.m_phi
+        s    = mphi**2 + mN**2 + 2.0 * mN * E
+
+        # Physical t range for φ N → γ N:
+        # t_min (most negative) corresponds to backward scattering,
+        # t_max (least negative) to forward scattering.
+        # For m_γ = 0:
+        #   t_max = mphi² − 2E_φ * E_γ_max  ... use standard 2→2 formula
+        # Simpler: use Q2 bounds from SIREN's phase_space helpers treating
+        # m_ups = 0 (photon).
+        Q2min = phase_space.upscattering_Q2min(E, 0.0, self.MA)
+        Q2max = phase_space.upscattering_Q2max(E, 0.0, self.MA)
+        if Q2max <= Q2min:
+            return 0.0
+        result, _ = _scipy_integrate.quad(
+            lambda Q2: float(np.real(self.diff_xsec_Q2(E, Q2))),
+            Q2min,
+            Q2max,
+            limit=80,
+            epsrel=1e-4,
+        )
+        return max(0.0, result)
+
+    def __repr__(self):
+        return (
+            f"DarkPrimakoffUpsCase("
+            f"m_phi={self.m_phi*1e3:.1f} MeV, "
+            f"m_Z'={self.m_Zprime*1e3:.1f} MeV, "
+            f"g_n={self.g_n:.2e}, λ={self.lam:.2e} GeV⁻¹)"
+        )
+
+
+
+import scipy.integrate as _sci_int
+import scipy.special  as _sci_sp
+
+# Physical constants (SI-free, natural units with ℏc = 0.197327 GeV·fm)
+_M_PI   = 0.13957   # GeV  charged pion mass
+_M_MU   = 0.10566   # GeV  muon mass
+_M_NU   = 0.0       # GeV  neutrino mass (massless)
+_GF     = 1.1664e-5 # GeV⁻²  Fermi constant
+_Vud    = 0.9740    # CKM element
+_fpi    = 0.1307    # GeV  pion decay constant
+_HBAR_C = 0.197327e-13  # GeV·cm  (converts GeV⁻¹ to cm)
+
+
+def _three_body_decay_rate_phi(m_phi: float, g_mu: float,
+                                E_phi_vals: np.ndarray) -> np.ndarray:
+ 
+    M    = _M_PI
+    mm   = _M_MU
+    mphi = m_phi
+    rmu2 = (mm  / M) ** 2
+    rph2 = (mphi / M) ** 2
+
+    E_phi_max = (M**2 + mphi**2 - mm**2) / (2.0 * M)
+    results   = np.zeros(len(E_phi_vals), dtype=float)
+
+    N_EMU = 120   # y-grid points for trapz integration — pure numpy
+
+    for i, Ep in enumerate(E_phi_vals):
+        if Ep <= mphi or Ep >= E_phi_max:
+            continue
+        x  = Ep / M
+        Eq = M - Ep
+        q2 = Eq**2 - max(Ep**2 - mphi**2, 0.0)
+        if q2 <= mm**2:
+            continue
+        mq = np.sqrt(q2)
+        pq = np.sqrt(max(Eq**2 - q2, 0.0))
+
+        # E_μ bounds (lab = pion rest frame)
+        centre  = (q2 + mm**2) / (2.0 * mq)
+        half    = pq * (mq**2 - mm**2) / (2.0 * q2) if pq > 0 else 0.0
+        Emu_lo  = max(centre - half, mm)
+        Emu_hi  = centre + half
+        if Emu_hi <= Emu_lo:
+            continue
+
+        # Dense y-grid (pure numpy)
+        Emu  = np.linspace(Emu_lo, Emu_hi, N_EMU)
+        Enu  = M - Ep - Emu                          # E_ν array
+        # Mask unphysical points
+        good = Enu > 0
+        if not good.any():
+            continue
+        Emu  = Emu[good];  Enu = Enu[good]
+
+        # Four-dot products (all arrays)
+        mu_phi = 0.5 * (M**2 - 2.0*M*Enu - mm**2 - mphi**2)
+        nu_phi = 0.5 * (M**2 - 2.0*M*Emu - mphi**2)
+        pi_nu  = M * Enu
+        pi_mu  = M * Emu
+
+        amp2 = 2.0 * (pi_nu * (mm**2 - mu_phi) + pi_mu * nu_phi)
+        amp2 = np.clip(amp2, 0.0, None)
+
+        # Trapz integration over E_μ
+        results[i] = np.trapz(amp2, Emu)
+
+    prefactor = g_mu**2 * _Vud**2 * _GF**2 * _fpi**2 / (128.0 * np.pi**3)
+    return prefactor * results
+
+
+def build_phi_flux(
+    m_phi: float,
+    g_mu: float,
+    E_thresh: float,
+    E_max: float = 3.0,
+    n_bins: int  = 50,
+    physically_normalized: bool = True,
+    dat_dir: str = None,
+):
+
+    import siren
+
+    # ── Locate and load the pion dat file ────────────────────────────────────
+    if dat_dir is None:
+        # siren.utilities.get_resource_path does not exist in this version.
+        # Resolve the dat file location the same way the main simulation script
+        # does: find where the siren package itself is installed, then walk to
+        # the SIREN resources tree which sits two levels above site-packages/siren.
+        import siren as _siren_pkg
+        _siren_dir  = os.path.dirname(_siren_pkg.__file__)   # .../site-packages/siren
+        _site_pkgs  = os.path.dirname(_siren_dir)            # .../site-packages
+        # The SIREN source tree is the git clone, found via the running script's
+        # location or via a known relative path from the venv.
+        # Prefer: walk up from __file__ of this module (SIREN_DarkNews.py) to find
+        # the resources/fluxes tree in the SIREN git clone.
+        # Fallback chain:
+        #   1. ~/SIREN/resources/fluxes/PionKaon/PionKaon-v1.0/
+        #   2. next to this file (in case dat files were copied here)
+        import pathlib as _pl
+        _candidates = [
+            _pl.Path.home() / "SIREN" / "resources" / "fluxes" / "PionKaon" / "PionKaon-v1.0",
+            _pl.Path(__file__).parent.parent.parent.parent.parent / "SIREN" / "resources" / "fluxes" / "PionKaon" / "PionKaon-v1.0",
+            _pl.Path(__file__).parent,
+        ]
+        dat_dir = None
+        for _c in _candidates:
+            if (_c / "PionKaon_FHC_pion.dat").exists():
+                dat_dir = str(_c)
+                break
+        if dat_dir is None:
+            raise FileNotFoundError(
+                "Could not find PionKaon_FHC_pion.dat. "
+                "Pass dat_dir= explicitly to build_phi_flux()."
+            )
+
+    dat_path  = os.path.join(dat_dir, "PionKaon_FHC_pion.dat")
+    all_lines = open(dat_path).readlines()
+    headers   = all_lines[0].strip().split()
+    data      = [line.strip().split() for line in all_lines[1:] if line.strip()]
+
+    numu_col = headers.index("numu")
+
+    # Pion bin centres [GeV], pion flux [cm⁻² GeV⁻¹ POT⁻¹]
+    pi_E   = np.array([(float(r[0]) + float(r[1])) / 2.0 for r in data])
+    pi_phi = np.array([float(r[numu_col]) / (50 * 1000 * 1e4) for r in data])
+    # (50 bins × 1000 cm² area × 1e4 unit conversion — same as flux.py)
+
+    # ── Output φ energy grid ─────────────────────────────────────────────────
+    E_phi_out = np.linspace(E_thresh, E_max, n_bins)
+    phi_flux  = np.zeros(n_bins)
+
+    # Rest-frame φ energy grid (fine sampling for the boost integral)
+    E_phi_rf_max = (_M_PI**2 + m_phi**2 - _M_MU**2) / (2.0 * _M_PI)
+    if E_phi_rf_max <= m_phi:
+        # Kinematically forbidden even at rest → return zero flux
+        energies = list(E_phi_out)
+        flux_arr = list(phi_flux)
+        return siren.distributions.TabulatedFluxDistribution(
+            E_thresh, E_max, energies, flux_arr, physically_normalized
+        )
+
+    E_phi_rf = np.linspace(m_phi, E_phi_rf_max, 200)
+    dGamma   = _three_body_decay_rate_phi(m_phi, g_mu, E_phi_rf)
+
+    # ── Fold pion flux × boosted φ spectrum ──────────────────────────────────
+    for E_pi, phi_pi in zip(pi_E, pi_phi):
+        if phi_pi <= 0.0 or E_pi < _M_PI:
+            continue
+        # Pion boost: β = p_π / E_π,  γ = E_π / m_π
+        p_pi  = np.sqrt(max(E_pi**2 - _M_PI**2, 0.0))
+        gamma = E_pi / _M_PI
+        beta  = p_pi / E_pi if E_pi > 0 else 0.0
+
+        # For each rest-frame φ energy, sample isotropic decay:
+        # lab energy E_lab = γ(E_rf + β p_rf cosθ)
+        # Average over cosθ ∈ [−1,1]:  <E_lab> = γ E_rf  (isotropic)
+        # But the distribution dN/dE_lab is flat in [γ(E_rf−β p_rf), γ(E_rf+β p_rf)]
+        # → project each (E_phi_rf, dΓ/dE_phi_rf) bin onto the lab-frame grid.
+        for j, (Erf, dG) in enumerate(zip(E_phi_rf, dGamma)):
+            if dG <= 0.0:
+                continue
+            p_rf   = np.sqrt(max(Erf**2 - m_phi**2, 0.0))
+            E_lo   = gamma * (Erf - beta * p_rf)
+            E_hi   = gamma * (Erf + beta * p_rf)
+            if E_hi <= E_thresh or E_lo >= E_max:
+                continue
+            if E_lo >= E_hi:
+                E_lo = E_hi = gamma * Erf
+
+            # Width of the rest-frame bin
+            dErf = (E_phi_rf_max - m_phi) / 199.0
+
+            # Distribute dG * dErf uniformly over [E_lo, E_hi] on the output grid
+            # dN/dE_lab = dG * dErf / (E_hi - E_lo)  if E_hi > E_lo
+            dE_lab = max(E_hi - E_lo, 1e-9)
+            density = dG * dErf / dE_lab * phi_pi   # [GeV⁻¹ cm⁻² POT⁻¹]
+
+            for k, Eout in enumerate(E_phi_out):
+                dEout = (E_max - E_thresh) / (n_bins - 1)
+                if E_lo <= Eout + 0.5*dEout and Eout - 0.5*dEout <= E_hi:
+                    overlap = min(Eout + 0.5*dEout, E_hi) - max(Eout - 0.5*dEout, E_lo)
+                    phi_flux[k] += density * overlap
+
+    return siren.distributions.TabulatedFluxDistribution(
+        E_thresh, E_max, list(E_phi_out), list(phi_flux), physically_normalized
+    )
