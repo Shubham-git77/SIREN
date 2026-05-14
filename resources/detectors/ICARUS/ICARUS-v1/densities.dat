@@ -1,43 +1,42 @@
 # Detector model file
-# Detector: ICARUS
+# Detector: ICARUS T600 at Fermilab (SBN Far Detector)
 # Version: v1
-# Material model file: ICARUS-v1.dat
+# Material model file: material.dat
 # Authors: Shubham Gupta
-# Notes:
+#Notes:
+# BNB positions (z relative to ICARUS centre):
+# Decay pipe : z = -516 m to -466 m  (centre z = -491 m) 
+# BNB target : z = -541 m  (ICARUS baseline = 541 m)    
 
-
-# ==============================
 # WORLD
-# ==============================
-object box 0 0 0   0 0 0   50 50 50   world_air   AIR   constant 0.001225
+object box   0   0   -245    0 0 0    200  150  350    world_air    AIR    constant   0.001225
 
-# Full ICARUS envelope (covers both modules)
-object box 0 0 0  0 0 0  5 2.5 10  icarus_full  LAR constant 1.396
+# SURROUNDING ROCK
+# ROCK 2.700 g/cm3,  y = -150 m to +5.6 m (ground)
+object box   0   -72.2   -245    0 0 0    200  77.8  350    surr_rock    ROCK    constant   2.700
 
-# ==============================
-# ICARUS MODULES (2 cryostats)
-# ==============================
+# BNB DECAY PIPE 
+# Steel pipe wall  r = 0.929 m  (inner 0.914 m + 15 mm wall)
+object cylinder   0   0   -491    0 0 0    0.929  0  25.0    decay_steel_pipe    STEEL    constant   7.870
+# Air bore  r = 0.914 m  (91.4 cm),  half-length = 25 m  (50 m total)
+object cylinder   0   0   -491    0 0 0    0.914  0  25.0    decay_air_bore      AIR      constant   0.001225
 
-# Left module
-object box -2.0 0 0   0 0 0   1.8 1.95 9.8   icarus_left   LAR   constant 1.396
+# CONCRETE OVERBURDEN 
+object box   0   4.185   0    0 0 0    6.0  1.425  11.0    overburden_slab    CONCRETE    constant   2.300
 
-# Right module
-object box  2.0 0 0   0 0 0   1.8 1.95 9.8   icarus_right  LAR   constant 1.396
+# OUTER WARM STEEL STRUCTURE 
 
-# ==============================
-# DETECTOR
-# ==============================
-detector 0 0 0
+object box   0   0   0    0 0 0    4.46  2.61  10.61    outer_steel_structure    STEEL    constant   7.870
 
-# ==============================
-# FIDUCIAL VOLUMES
-# ==============================
+# LAr ACTIVE VOLUMES 
+object box   -2.0   0   0    0 0 0    1.80  1.95  9.95    icarus_left     LAR    constant   1.396
+object box    2.0   0   0    0 0 0    1.80  1.95  9.95    icarus_right    LAR    constant   1.396
 
-# Left fiducial
-object box -2.0 0 0   0 0 0   1.5 1.5 8.0   fid_left   LAR   constant 1.396
+detector   0   0   0
 
-# Right fiducial
-object box  2.0 0 0   0 0 0   1.5 1.5 8.0   fid_right  LAR   constant 1.396
+# FIDUCIAL VOLUMES 
+object box   -2.0   0   0    0 0 0    1.55  1.65  9.45    fid_left     LAR    constant   1.396
+object box    2.0   0   0    0 0 0    1.55  1.65  9.45    fid_right    LAR    constant   1.396
 
 fiducial fid_left
 fiducial fid_right
