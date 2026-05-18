@@ -1,4 +1,5 @@
 import os
+import math
 import numpy as np
 
 import siren
@@ -11,10 +12,10 @@ from siren.SIREN_DarkNews import PyDarkNewsCrossSection, VectorPortalUpsCase
 from DarkNews import phase_space
 from DarkNews.processes import ChiPrimeDecay, DarkPhotonDecay
 
-M_CHI        = 8e-3      # GeV  χ   dark matter ground state
-M_CHI_PRIME  = 50e-3     # GeV  χ'  dark matter excited state
-M_V1         = 17e-3     # GeV  V₁  light dark photon
-M_V2         = 200e-3    # GeV  V₂  heavy upscattering mediator
+M_CHI        = 8e-3       # GeV  χ   dark matter ground state
+M_CHI_PRIME  = 50e-3      # GeV  χ'  dark matter excited state
+M_V1         = 17e-3      # GeV  V₁  light dark photon
+M_V2         = 200e-3     # GeV  V₂  heavy upscattering mediator
 G_D          = 1.0
 EPSILON_1    = 7e-5
 EPSILON_2    = 1e-4
@@ -31,11 +32,10 @@ NUCLEAR_A        = 12
 events_to_inject = 100_000
 experiment       = "MiniBooNE"
 
-
 M_LEPTON    = 0.000511    # GeV — 0.10566 for μ, 0.000511 for e
 M_MESON     = 0.13957     # GeV — 0.13957 for π, 0.49368 for K
 flux_tag    = "pion_nue"     # pion_numu / pion_nue / kaon_numu / kaon_nue
-output_stem = "output/MiniBooNE_Vectorportal_pi_e"
+output_stem = "output/MiniBooNE_VectorPortal_pi_e"
 
 detector_model = utilities.load_detector(experiment)
 primary_type   = siren.dataclasses.Particle.ParticleType(PDGID_CHI)
@@ -50,63 +50,93 @@ os.makedirs(table_dir, exist_ok=True)
 
 def compute_chi_flux(flux_tag, m_meson, m_lepton, m_V1, min_energy, max_energy,
                      physically_normalized):
-
     raw_flux = siren.utilities.load_flux(
         "PionKaon",
         tag                   = flux_tag,
         physically_normalized = physically_normalized,
     )
-    meson_energies = list(raw_flux.GetEnergyNodes())
 
- 
+    # Check kinematic feasibility
     available = m_meson - m_lepton
     if available <= m_V1:
         raise RuntimeError(
-            f"Channel kinematically forbidden!\n"
-            f"  m_meson={m_meson*1e3:.1f} MeV, m_lepton={m_lepton*1e3:.1f} MeV, "
-            f"m_V1={m_V1*1e3:.1f} MeV\n"
-            f"  Need m_meson > m_lepton + m_V1"
+            "Channel kinematically forbidden!\n"
+            "  m_meson=%.1f MeV, m_lepton=%.1f MeV, m_V1=%.1f MeV\n"
+            "  Need m_meson > m_lepton + m_V1"
+            % (m_meson*1e3, m_lepton*1e3, m_V1*1e3)
         )
 
+    # The flux table contains *neutrino* energies, not meson energies.
+    # Reconstruct meson energy from neutrino energy using the two-body
+    # decay relation: E_nu_rf = (m_meson^2 - m_lepton^2) / (2 * m_meson)
+    E_nu_rf           = (m_meson**2 - m_lepton**2) / (2.0 * m_meson)
+    nu_to_meson_scale = m_meson / E_nu_rf  # = 2*m_meson^2 / (m_meson^2 - m_lepton^2)
+
+    # Three-body branching ratio BR(meson -> lepton nu V1).
+    # Gamma(M->l nu V1)/Gamma(M->l nu) = 2*(alpha_D/alpha_EM)*epsilon_1^2 * g(x,y)
+    # where g(x,y) = (1-y^2)^2*(1+2*y^2) / (1-x^2)^2
+    # x = m_lepton/m_meson, y = m_V1/m_meson
+    alpha_EM = 1.0 / 137.0
+    alpha_D  = G_D**2 / (4.0 * math.pi)
+
+    x = m_lepton / m_meson
+    y = m_V1     / m_meson
+
+    if (1.0 - x - y) <= 0:
+        br_ratio = 0.0
+    else:
+        num      = (1.0 - y**2)**2 * (1.0 + 2.0*y**2)
+        den      = (1.0 - x**2)**2
+        g_ps     = num / den if den > 0 else 0.0
+        br_ratio = 2.0 * (alpha_D / alpha_EM) * (EPSILON_1**2) * g_ps
+
+    # Correct chi energy from V1 -> chi chi' decay using two-body kinematics
+    # in the V1 rest frame, angle-averaged:
+    #   E_chi_rf = (m_V1^2 + m_chi^2) / (2*m_V1)
+    #   <E_chi>  = gamma_V1 * E_chi_rf
+    E_chi_rf = (m_V1**2 + M_CHI**2) / (2.0 * m_V1)
+
+    # V1 energy in meson rest frame
     E_V_rest = (m_meson**2 + m_V1**2 - m_lepton**2) / (2.0 * m_meson)
 
-    chi_energies = []
+    nu_energies   = list(raw_flux.GetEnergyNodes())
+    chi_energies  = []
     chi_flux_vals = []
 
-    for E_meson in meson_energies:
+    for E_nu in nu_energies:
+        # Reconstruct meson energy from neutrino energy
+        E_meson = E_nu * nu_to_meson_scale
         if E_meson < m_meson:
             continue
 
-        # Lorentz boost factor of meson in lab frame
         gamma_meson = E_meson / m_meson
+        E_V_lab     = gamma_meson * E_V_rest
 
-        # V₁ energy in lab frame (forward boost approximation)
-        E_V_lab = gamma_meson * E_V_rest
+        # Angle-averaged chi energy
+        gamma_V1 = E_V_lab / m_V1
+        E_chi    = gamma_V1 * E_chi_rf
 
-        # χ energy: each χ gets half of V₁ in V₁ rest frame, boosted to lab
-        E_chi = E_V_lab * 0.5
-
-        # Apply energy cuts
         if E_chi < min_energy or E_chi > max_energy:
             continue
 
-        # Get flux value at this meson energy
-        flux_val = raw_flux.SamplePDF(E_meson)
+        # Sample flux at the native neutrino energy node
+        flux_val = raw_flux.SamplePDF(E_nu)
 
         chi_energies.append(E_chi)
-        chi_flux_vals.append(flux_val)
+        chi_flux_vals.append(flux_val * br_ratio)
 
     if len(chi_energies) == 0:
         raise RuntimeError(
-            f"No χ energies in range [{min_energy*1e3:.1f}, {max_energy*1e3:.1f}] MeV!\n"
-            f"  E_V_rest = {E_V_rest*1e3:.1f} MeV → check mass parameters."
+            "No chi energies in range [%.1f, %.1f] MeV!\n"
+            "  E_chi_rf = %.1f MeV -> check mass parameters."
+            % (min_energy*1e3, max_energy*1e3, E_chi_rf*1e3)
         )
 
-    idx          = np.argsort(chi_energies)
+    idx           = np.argsort(chi_energies)
     chi_energies  = np.array(chi_energies)[idx].tolist()
     chi_flux_vals = np.array(chi_flux_vals)[idx].tolist()
-
     return chi_energies, chi_flux_vals
+
 
 ups_case = VectorPortalUpsCase(
     m_chi           = M_CHI,
@@ -123,7 +153,6 @@ ups_case = VectorPortalUpsCase(
 )
 E_thresh = ups_case.Ethreshold
 print("χ upscattering threshold (from ups_case): %.2f MeV" % (E_thresh * 1e3))
-
 
 print("Computing χ flux for channel: %s  (m_lepton=%.2f MeV) ..." % (
     flux_tag, M_LEPTON * 1e3))
@@ -236,7 +265,6 @@ def stop(datum, i):
     sec_type = datum.record.signature.secondary_types[i]
     return sec_type not in [chi_prime_type, v1_type]
 
-
 injector = siren.injection.Injector()
 injector.number_of_events                  = events_to_inject
 injector.detector_model                    = detector_model
@@ -246,7 +274,6 @@ injector.primary_injection_distributions   = primary_injection_distributions
 injector.secondary_interactions            = secondary_processes
 injector.secondary_injection_distributions = secondary_injection_distributions
 injector.stopping_condition                = stop
-
 
 print("Generating %d events ..." % events_to_inject)
 events, gen_times = GenerateEvents(injector)
