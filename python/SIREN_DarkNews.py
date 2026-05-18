@@ -7,6 +7,7 @@ import ntpath
 import pickle
 import functools
 import logging
+import tempfile
 from scipy.interpolate import LinearNDInterpolator,PchipInterpolator
 
 # SIREN methods
@@ -20,10 +21,99 @@ from siren.DNModelContainer import ModelContainer
 import DarkNews
 from DarkNews import phase_space
 from DarkNews.nuclear_tools import NuclearTarget
-from DarkNews.integrands import get_decay_momenta_from_vegas_samples
+from DarkNews import processes as _dn_proc
+from DarkNews.processes import FermionSinglePhotonDecay, FermionDileptonDecay, ThreePortalDecay
+from DarkNews import Cfourvec as Cfv
 
 
 resources_dir = _util.resource_package_dir()
+
+# ---------------------------------------------------------------------------
+# ThreePortalDecay-aware momentum sampler (replaces DarkNews stock version)
+# ---------------------------------------------------------------------------
+
+def get_decay_momenta_from_vegas_samples(vsamples, MC_case, decay_case, PN_LAB):
+    four_momenta = {}
+
+    boost_scattered_N = {
+        "EP_LAB":    PN_LAB.T[0],
+        "costP_LAB": Cfv.get_cosTheta(PN_LAB),
+        "phiP_LAB":  np.arctan2(PN_LAB.T[2], PN_LAB.T[1]),
+    }
+
+    if isinstance(decay_case, _dn_proc.FermionDileptonDecay):
+        mh = decay_case.m_parent
+        mf = decay_case.m_daughter
+        mm = decay_case.mm
+        mp = decay_case.mm
+
+        if decay_case.vector_on_shell or decay_case.scalar_on_shell:
+            if decay_case.vector_on_shell and decay_case.scalar_off_shell:
+                m_mediator = decay_case.mzprime
+            elif decay_case.vector_off_shell and decay_case.scalar_on_shell:
+                m_mediator = decay_case.mhprime
+            else:
+                raise NotImplementedError("Both mediators on-shell is not yet implemented.")
+
+            N_decay_samples = {"unit_cost": np.array(vsamples[0])}
+            masses_decay = {"m1": mh, "m2": mf, "m3": m_mediator}
+            P1LAB_decay, P2LAB_decay, P3LAB_decay = phase_space.two_body_decay(
+                N_decay_samples, boost=boost_scattered_N, **masses_decay, rng=MC_case.rng
+            )
+            boost_Z = {
+                "EP_LAB":    P3LAB_decay.T[0],
+                "costP_LAB": Cfv.get_cosTheta(P3LAB_decay),
+                "phiP_LAB":  np.arctan2(P3LAB_decay.T[2], P3LAB_decay.T[1]),
+            }
+            Z_decay_samples = {}
+            masses_decay = {"m1": m_mediator, "m2": mp, "m3": mm}
+            P1LAB_decayZ, P2LAB_decayZ, P3LAB_decayZ = phase_space.two_body_decay(
+                Z_decay_samples, boost=boost_Z, **masses_decay, rng=MC_case.rng
+            )
+            four_momenta["P_decay_N_parent"]   = P1LAB_decay
+            four_momenta["P_decay_N_daughter"] = P2LAB_decay
+            four_momenta["P_decay_ell_minus"]  = P2LAB_decayZ
+            four_momenta["P_decay_ell_plus"]   = P3LAB_decayZ
+
+        elif decay_case.vector_off_shell and decay_case.scalar_off_shell:
+            N_decay_samples = {
+                "unit_t":     vsamples[0],
+                "unit_u":     vsamples[1] if len(vsamples) > 1 else np.array([0.5]),
+                "unit_c3":    vsamples[2] if len(vsamples) > 1 else np.array([0.5]),
+                "unit_phi34": vsamples[3] if len(vsamples) > 3 else np.array([0.0]),
+            }
+            masses_decay = {"m1": mh, "m2": mm, "m3": mp, "m4": mf}
+            (P1LAB_decay, P2LAB_decay, P3LAB_decay, P4LAB_decay) = phase_space.three_body_decay(
+                N_decay_samples, boost=boost_scattered_N, **masses_decay, rng=MC_case.rng
+            )
+            four_momenta["P_decay_N_parent"]   = P1LAB_decay
+            four_momenta["P_decay_ell_minus"]  = P2LAB_decay
+            four_momenta["P_decay_ell_plus"]   = P3LAB_decay
+            four_momenta["P_decay_N_daughter"] = P4LAB_decay
+
+    elif isinstance(decay_case, _dn_proc.FermionSinglePhotonDecay):
+        mh = decay_case.m_parent
+        mf = decay_case.m_daughter
+        N_decay_samples = {"unit_cost": np.array(vsamples[0])}
+        masses_decay = {"m1": mh, "m2": mf, "m3": 0.0}
+        P1LAB_decay, P2LAB_decay, P3LAB_decay = phase_space.two_body_decay(
+            N_decay_samples, boost=boost_scattered_N, **masses_decay, rng=MC_case.rng
+        )
+        four_momenta["P_decay_N_parent"]   = P1LAB_decay
+        four_momenta["P_decay_N_daughter"] = P2LAB_decay
+        four_momenta["P_decay_photon"]     = P3LAB_decay
+
+    return four_momenta
+
+
+class _FakeMCInterface:
+    """Adapts SIREN's random object to the DarkNews MC interface (.rng callable)."""
+    def __init__(self, random):
+        self.random   = random
+        self.rng_func = np.frompyfunc(lambda x: self.random.Uniform(0, 1), 1, 1)
+        self.rng      = lambda x: self.rng_func(np.empty(x)).astype(float)
+
+
 
 cross_section_kwarg_keys = ["tolerance",
                             "interp_tolerance",
@@ -832,6 +922,7 @@ class PyDarkNewsDecay(DarkNewsDecay):
         # Some variables for storing the decay phase space integrator
         self.decay_integrator = None
         self.decay_norm = None
+        self.decay_result = None
         self.PS_samples = None
         self.PS_weights = None
         self.PS_weights_CDF = None
@@ -858,11 +949,12 @@ class PyDarkNewsDecay(DarkNewsDecay):
                 exit(0)
 
         if table_dir_exists:
-            self.SetIntegratorAndNorm()
+            self.load_from_table(self.table_dir)
 
     def get_representation(self):
         return {"decay_integrator":self.decay_integrator,
                 "decay_norm":self.decay_norm,
+                "decay_result":self.decay_result,
                 "dec_case":self.dec_case,
                 "PS_samples":self.PS_samples,
                 "PS_weights":self.PS_weights,
@@ -871,19 +963,47 @@ class PyDarkNewsDecay(DarkNewsDecay):
                 "table_dir":self.table_dir
                }
 
-    def SetIntegratorAndNorm(self):
-        # Try to find the decay integrator
-        int_file = os.path.join(self.table_dir, "decay_integrator.pkl")
-        if os.path.isfile(int_file):
-            with open(int_file, "rb") as ifile:
-                _, self.decay_integrator = pickle.load(ifile)
-        # Try to find the normalization information
-        norm_file = os.path.join(self.table_dir, "decay_norm.json")
-        if os.path.isfile(norm_file):
-            with open(
-                norm_file,
-            ) as nfile:
-                self.decay_norm = json.load(nfile)
+    def SetIntegratorAndNorm(self, decay_norm, decay_integrator, decay_result=None):
+        self.decay_norm = decay_norm
+        self.decay_integrator = decay_integrator
+        self.decay_result = decay_result
+
+    def load_from_table(self, table_dir):
+        """Load decay integrator state from table_dir (dict-pkl or legacy format)."""
+        if not os.path.exists(table_dir):
+            try:
+                os.makedirs(table_dir, exist_ok=False)
+            except OSError:
+                raise RuntimeError("Directory '%s' cannot be created" % table_dir)
+        decay_file = os.path.join(table_dir, "decay.pkl")
+        if os.path.isfile(decay_file):
+            with open(decay_file, "rb") as f:
+                data = pickle.load(f)
+            if isinstance(data, dict):
+                self.decay_norm       = data.get("decay_norm")
+                self.decay_integrator = data.get("decay_integrator")
+                self.decay_result     = data.get("decay_result")
+                if self.decay_integrator is not None and self.decay_result is None:
+                    print("[WARNING] Incomplete decay.pkl detected → resetting to recompute")
+                    self.decay_norm       = None
+                    self.decay_integrator = None
+                    self.decay_result     = None
+            elif isinstance(data, (tuple, list)) and len(data) == 2:
+                self.decay_norm, self.decay_integrator = data
+                self.decay_result = None
+            else:
+                raise RuntimeError("Unrecognised format in decay.pkl — delete the file and rerun.")
+        else:
+            pass  # No decay.pkl yet; fields remain None and will be computed on first use
+
+    def save_to_table(self, table_dir):
+        """Persist integrator state to table_dir/decay.pkl (dict format)."""
+        with open(os.path.join(table_dir, "decay.pkl"), "wb") as f:
+            pickle.dump({
+                "decay_integrator": self.decay_integrator,
+                "decay_norm":       self.decay_norm,
+                "decay_result":     self.decay_result,
+            }, f)
 
     def GetPossibleSignatures(self):
         signature = dataclasses.InteractionSignature()
@@ -917,7 +1037,7 @@ class PyDarkNewsDecay(DarkNewsDecay):
         # Momentum variables of HNL necessary for calculating decay phase space
         PN = np.array(record.primary_momentum)
 
-        if type(self.dec_case) == DarkNews.processes.FermionSinglePhotonDecay:
+        if isinstance(self.dec_case, FermionSinglePhotonDecay):
             gamma_idx = 0
             for secondary in record.signature.secondary_types:
                 if secondary == dataclasses.Particle.ParticleType.Gamma:
@@ -930,7 +1050,7 @@ class PyDarkNewsDecay(DarkNewsDecay):
             Pgamma = np.array(record.secondary_momenta[gamma_idx])
             momenta = np.expand_dims(PN, 0), np.expand_dims(Pgamma, 0)
 
-        elif type(self.dec_case) == DarkNews.processes.FermionDileptonDecay:
+        elif isinstance(self.dec_case, FermionDileptonDecay):
             lepminus_idx = -1
             lepplus_idx = -1
             nu_idx = -1
@@ -967,9 +1087,9 @@ class PyDarkNewsDecay(DarkNewsDecay):
         return self.dec_case.differential_width(momenta)
 
     def TotalDecayWidth(self, arg1):
-        if type(arg1) == dataclasses.InteractionRecord:
+        if isinstance(arg1, dataclasses.InteractionRecord):
             primary = arg1.signature.primary_type
-        elif type(arg1) == dataclasses.Particle.ParticleType:
+        elif isinstance(arg1, dataclasses.Particle.ParticleType):
             primary = arg1
         else:
             print("Incorrect function call to TotalDecayWidth!")
@@ -978,23 +1098,89 @@ class PyDarkNewsDecay(DarkNewsDecay):
             return 0
         if self.total_width is None:
             # Need to set the total width
-            if type(self.dec_case) == DarkNews.processes.FermionDileptonDecay and (
+            if isinstance(self.dec_case, ThreePortalDecay):
+                # ThreePortalDecay.total_width() is broken in this DarkNews version
+                # regardless of on/off-shell status — it passes arrays to
+                # three_body_umax where scalars are expected. Always use SamplePS.
+                if self.decay_result is not None and isinstance(self.decay_result, dict):
+                    self.total_width = (
+                        self.decay_result["diff_decay_rate_0"].mean
+                        * self.decay_norm["diff_decay_rate_0"]
+                    )
+                else:
+                    norm_file = tempfile.NamedTemporaryFile(delete=False)
+                    integrator_file = tempfile.NamedTemporaryFile(delete=False)
+                    norm_name = norm_file.name
+                    integrator_name = integrator_file.name
+                    norm_file.close()
+                    integrator_file.close()
+                    try:
+                        self.PS_samples, PS_weights_dict = self.dec_case.SamplePS(
+                            savefile_norm=norm_name, savefile_dec=integrator_name
+                        )
+                        with open(norm_name, "r") as f:
+                            dec_norm = json.load(f)
+                        with open(integrator_name, "rb") as f:
+                            dec_result, dec_integrator = pickle.load(f)
+                        self.PS_weights = PS_weights_dict["diff_decay_rate_0"]
+                        self.SetIntegratorAndNorm(dec_norm, dec_integrator, dec_result)
+                        self.total_width = (
+                            dec_result["diff_decay_rate_0"].mean
+                            * dec_norm["diff_decay_rate_0"]
+                        )
+                    finally:
+                        if os.path.exists(norm_name): os.remove(norm_name)
+                        if os.path.exists(integrator_name): os.remove(integrator_name)
+            elif isinstance(self.dec_case, FermionDileptonDecay) and (
                 self.dec_case.vector_off_shell and self.dec_case.scalar_off_shell
             ):
                 # total width calculation requires evaluating an integral
                 if self.decay_integrator is None or self.decay_norm is None:
                     # We need to initialize a new VEGAS integrator in DarkNews
-                    int_file = os.path.join(self.table_dir, "decay_integrator.pkl")
-                    norm_file = os.path.join(self.table_dir, "decay_norm.json")
+                    norm_file = tempfile.NamedTemporaryFile(delete=False)
+                    integrator_file = tempfile.NamedTemporaryFile(delete=False)
+                    norm_name = norm_file.name
+                    integrator_name = integrator_file.name
+                    norm_file.close()
+                    integrator_file.close()
                     self.total_width = self.dec_case.total_width(
-                        savefile_norm=norm_file, savefile_dec=int_file
+                        savefile_norm=norm_name, savefile_dec=integrator_name
                     )
-                    self.SetIntegratorAndNorm()
+                    try:
+                        with open(norm_name, "r") as f:
+                            dec_norm = json.load(f)
+                        try:
+                            with open(integrator_name, "rb") as f:
+                                dec_result, dec_integrator = pickle.load(f)
+                        except EOFError:
+                            print("[WARNING] Corrupted integrator file — recomputing")
+                            dec_result = None
+                            dec_integrator = None
+                    finally:
+                        if os.path.exists(norm_name):
+                            os.remove(norm_name)
+                        if os.path.exists(integrator_name):
+                            os.remove(integrator_name)
+                    self.SetIntegratorAndNorm(dec_norm, dec_integrator, dec_result)
                 else:
-                    self.total_width = (
-                        self.decay_integrator["diff_decay_rate_0"].mean
-                        * self.decay_norm["diff_decay_rate_0"]
-                    )
+                    if self.decay_result is None:
+                        print("[WARNING] decay_result missing → recomputing integrator")
+                        self.decay_integrator = None
+                        self.decay_norm = None
+                        self.decay_result = None
+                        self.total_width = None
+                        return self.TotalDecayWidth(arg1)
+                    if isinstance(self.decay_result, dict):
+                        self.total_width = (
+                            self.decay_result["diff_decay_rate_0"].mean
+                            * self.decay_norm["diff_decay_rate_0"]
+                        )
+                    elif hasattr(self.decay_integrator, "mean"):
+                        print("[INFO] Using integrator.mean (new API)")
+                        self.total_width = self.decay_integrator.mean
+                    else:
+                        print("[WARNING] fallback → using dec_case.total_width()")
+                        self.total_width = self.dec_case.total_width()
             else:
                 self.total_width = self.dec_case.total_width()
         return self.total_width
@@ -1019,9 +1205,9 @@ class PyDarkNewsDecay(DarkNewsDecay):
         return ret
 
     def DensityVariables(self):
-        if type(self.dec_case) == DarkNews.processes.FermionSinglePhotonDecay:
+        if isinstance(self.dec_case, FermionSinglePhotonDecay):
             return "cost"
-        elif type(self.dec_case) == DarkNews.processes.FermionDileptonDecay:
+        elif isinstance(self.dec_case, FermionDileptonDecay):
             if self.dec_case.vector_on_shell and self.dec_case.scalar_on_shell:
                 print("Can't have both the scalar and vector on shell")
                 exit(0)
@@ -1054,13 +1240,25 @@ class PyDarkNewsDecay(DarkNewsDecay):
             # We need to generate new PS samples
             if self.decay_integrator is None or self.decay_norm is None:
                 # We need to initialize a new VEGAS integrator in DarkNews
-                int_file = os.path.join(self.table_dir, "decay_integrator.pkl")
-                norm_file = os.path.join(self.table_dir, "decay_norm.json")
+                norm_file = tempfile.NamedTemporaryFile(delete=False)
+                integrator_file = tempfile.NamedTemporaryFile(delete=False)
+                norm_name = norm_file.name
+                integrator_name = integrator_file.name
+                norm_file.close()
+                integrator_file.close()
                 self.PS_samples, PS_weights_dict = self.dec_case.SamplePS(
-                    savefile_norm=norm_file, savefile_dec=int_file
+                    savefile_norm=norm_name, savefile_dec=integrator_name
                 )
+                try:
+                    with open(norm_name, "r") as f:
+                        dec_norm = json.load(f)
+                    with open(integrator_name, "rb") as f:
+                        _, dec_integrator = pickle.load(f)
+                finally:
+                    os.remove(norm_name)
+                    os.remove(integrator_name)
                 self.PS_weights = PS_weights_dict["diff_decay_rate_0"]
-                self.SetIntegratorAndNorm()
+                self.SetIntegratorAndNorm(dec_norm, dec_integrator)
             else:
                 # We already have an integrator, we just need new PS samples
                 self.PS_samples, PS_weights_dict = self.dec_case.SamplePS(
@@ -1075,13 +1273,14 @@ class PyDarkNewsDecay(DarkNewsDecay):
         # Expand dims required to call DarkNews function on signle sample
         four_momenta = get_decay_momenta_from_vegas_samples(
             np.expand_dims(PS, 0),
+            _FakeMCInterface(random),
             self.dec_case,
             np.expand_dims(np.array(record.primary_momentum), 0),
         )
 
-        secondaries = record.GetSecondaryParticleRecords()
+        secondaries = record.get_secondary_particle_records()
 
-        if type(self.dec_case) == DarkNews.processes.FermionSinglePhotonDecay:
+        if isinstance(self.dec_case, FermionSinglePhotonDecay):
             gamma_idx = 0
             for secondary in record.signature.secondary_types:
                 if secondary == dataclasses.Particle.ParticleType.Gamma:
@@ -1096,7 +1295,7 @@ class PyDarkNewsDecay(DarkNewsDecay):
             secondaries[nu_idx].four_momentum = np.squeeze(four_momenta["P_decay_N_daughter"])
             secondaries[nu_idx].mass = 0
 
-        elif type(self.dec_case) == DarkNews.processes.FermionDileptonDecay:
+        elif isinstance(self.dec_case, FermionDileptonDecay):
             lepminus_idx = -1
             lepplus_idx = -1
             nu_idx = -1

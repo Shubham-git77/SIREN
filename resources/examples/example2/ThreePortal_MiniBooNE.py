@@ -32,8 +32,8 @@ model_kwargs = {
     "HNLtype": "dirac",
 }
 
-events_to_inject = 10000
-experiment = "MINERvA"
+events_to_inject = 1000
+experiment = "MiniBooNE"
 detector_model = utilities.load_detector(experiment)
 
 primary_type = siren.dataclasses.Particle.ParticleType.NuMu
@@ -105,12 +105,12 @@ assert DN_min_decay_width < np.inf
 
 mass_ddist = siren.distributions.PrimaryMass(0)
 
-edist = siren.utilities.load_flux("NUMI", tag="FHC_ME_numu", physically_normalized=True)
+edist = siren.utilities.load_flux("BNB", tag="FHC_numu", physically_normalized=True)
 edist_gen = siren.utilities.load_flux(
-    "NUMI",
-    tag="FHC_ME_numu",
+    "BNB",
+    tag="FHC_numu",
     min_energy=model_kwargs["m4"],
-    max_energy=20,
+    max_energy=10,
     physically_normalized=False,
 )
 
@@ -119,12 +119,12 @@ direction_distribution = siren.distributions.FixedDirection(
 )
 
 decay_range_func = siren.distributions.DecayRangeFunction(
-    model_kwargs["m4"], DN_min_decay_width, 3, 240
+    model_kwargs["m4"], DN_min_decay_width, 3, 541
 )
 
 position_distribution = siren.distributions.DecayRangePositionDistribution(
-    1.24,
-    5.0,
+    6.2,
+    6.2,
     decay_range_func,
 )
 
@@ -181,7 +181,8 @@ SaveEvents(
     events,
     weighter,
     gen_times,
-    output_filename="output/MINERvA_ThreePortal",
+    fid_vol = fiducial_volume,
+    output_filename="output/MiniBooNE_ThreePortal",
 )
 tp_siren_decay.save_to_table(decay_table_dir)
 
