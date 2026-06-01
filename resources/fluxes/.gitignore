@@ -1,0 +1,3 @@
+# Large flux CSV files — generated locally by extraction scripts
+# Use extraction_kaon_csv.py and extraction_root_csv.py to regenerate
+*.csv
