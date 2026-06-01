@@ -68,6 +68,13 @@ static const std::map<ParticleType, double> ParticleMasses = {
     {ParticleType::NuLight,    0.0}, // Neutrinos are massless in this context
     {ParticleType::NuLightBar, 0.0}, // Neutrinos are massless in this context
     // ...add more as needed
+    /* Dutta-Kim Vector Portal custom dark sector particles */
+    {static_cast<ParticleType>(5917), 8e-3},
+    {static_cast<ParticleType>(5918), 50e-3},
+    {static_cast<ParticleType>(5922), 17e-3},
+    {static_cast<ParticleType>(5923), 17e-3},
+    {static_cast<ParticleType>(321),  0.493677},
+    {static_cast<ParticleType>(211),  0.139570},
 };
 
 inline double GetParticleMass(ParticleType type) {
