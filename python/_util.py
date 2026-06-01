@@ -157,34 +157,14 @@ def resource_dirs():
 
 
 # from imageio
-# https://github.com/imageio/imageio/blob/65d79140018bb7c64c0692ea72cb4093e8d632a0/imageio/core/util.py
 def resource_package_dir():
-    """package_dir
+    """Get the resources directory inside the installed siren package.
 
-    Get the resources directory in the siren package installation
-    directory.
-
-    Notes
-    -----
-    This is a convenience method that is used by `resource_dirs` and
-    siren entry point scripts.
+    This is a convenience method used by ``resource_dirs`` and siren
+    entry point scripts.
     """
-    # Make pkg_resources optional if setuptools is not available
-    try:
-        # Avoid importing pkg_resources in the top level due to how slow it is
-        # https://github.com/pypa/setuptools/issues/510
-        import pkg_resources
-    except ImportError:
-        pkg_resources = None
-
-    if pkg_resources:
-        # The directory returned by `pkg_resources.resource_filename`
-        # also works with eggs.
-        pdir = pkg_resources.resource_filename("siren", "resources")
-    else:
-        # If setuptools is not available, use fallback
-        pdir = os.path.abspath(os.path.join(THIS_DIR, "resources"))
-    return pdir
+    from importlib.resources import files
+    return str(files("siren") / "resources")
 
 
 # from imageio
@@ -312,13 +292,7 @@ _UNVERSIONED_MODEL_PATTERN = (
 _MODEL_PATTERN = (
     r"""
     (?P<model_name>
-        (?:
-            [a-zA-Z0-9]+
-        )
-        |
-        (?:
-            (?:[a-zA-Z0-9]+(?:[-_\.][a-zA-Z0-9]+)*(?:[-_\.][a-zA-Z]+[a-zA-Z0-9]*))?
-        )
+        [a-zA-Z0-9]+(?:(?:-(?!v?[0-9])|[_\.])[a-zA-Z0-9]+)*
     )
     (?:
         -
@@ -727,7 +701,7 @@ def import_resource(resource_type, resource_name):
 
     fname = os.path.join(abs_dir, f"{resource_type}.py")
     if not os.path.isfile(fname):
-        logging.warning(f"Could not find file '{fname}' when loading resource '{resource_type}' '{resource_name}'")
+        # No .py loader script; caller falls back to file-based loading.
         return None
     try:
         mod = load_module(f"siren-{resource_type}-{resource_name}", fname, persist=False)
@@ -762,6 +736,14 @@ def get_resource_loader(resource_type, resource_name):
             continue
         setattr(functor, key, getattr(resource_module, key))
     return functools.update_wrapper(functor, loader)
+
+
+def get_tabulated_flux_model_path(model_name, must_exist=True):
+    return _get_model_path(model_name, prefix=_resource_folder_by_name["flux"], is_file=False, must_exist=must_exist)
+
+
+def get_tabulated_flux_file(model_name, tag, must_exist=True):
+    return load_resource("flux", model_name, tag)
 
 
 def load_resource(resource_type, resource_name, *args, **kwargs):
@@ -802,8 +784,48 @@ def load_detector(model_name, *args, **kwargs):
     return _detector_file_loader(model_name)
 
 
+class ProcessBundle:
+    """Normalized return type from ``load_processes``.
+
+    Behaves like a 2-tuple ``(primary, secondary)`` for unpacking::
+
+        primary, secondary = siren.load_processes("CSMSDISSplines", ...)
+
+    Any extra return values from the process loader are available as
+    the ``metadata`` attribute (a tuple of additional return values).
+    """
+
+    def __init__(self, primary, secondary, *extra):
+        self.primary = primary
+        self.secondary = secondary
+        self.metadata = extra
+
+    def __iter__(self):
+        yield self.primary
+        yield self.secondary
+
+    def __len__(self):
+        return 2
+
+    def __getitem__(self, idx):
+        return (self.primary, self.secondary)[idx]
+
+    def __repr__(self):
+        n_primary = sum(len(v) for v in self.primary.values())
+        n_secondary = sum(len(v) for v in self.secondary.values())
+        extra = f", +{len(self.metadata)} metadata" if self.metadata else ""
+        return f"ProcessBundle({n_primary} primary, {n_secondary} secondary{extra})"
+
+
 def load_processes(model_name, *args, **kwargs):
-    return load_resource("processes", model_name, *args, **kwargs)
+    result = load_resource("processes", model_name, *args, **kwargs)
+    if result is None:
+        return None
+    if isinstance(result, tuple):
+        if len(result) >= 2:
+            return ProcessBundle(result[0], result[1], *result[2:])
+        return ProcessBundle(result[0], {})
+    return ProcessBundle(result, {})
 
 def get_fiducial_volume(experiment):
     """
@@ -826,6 +848,62 @@ def get_fiducial_volume(experiment):
         from . import detector as _detector
         return _detector.DetectorModel.ParseFiducialVolume(fiducial_line, detector_line)
     return None
+
+def get_volume_position_distribution_from_sector(detector_model, sector_name):
+    """Create a position distribution from a named detector sector.
+
+    Extracts the geometry from the sector, converts coordinates from
+    geometry frame to detector frame, and returns the appropriate
+    volume position distribution (Cylinder or Sphere).
+
+    Parameters
+    ----------
+    detector_model : DetectorModel
+        The loaded detector model.
+    sector_name : str
+        Name of the sector to use (e.g. "tilecal", "fiducial").
+
+    Returns
+    -------
+    CylinderVolumePositionDistribution or SphereVolumePositionDistribution
+    """
+    from . import detector as _detector
+    from . import geometry as _geometry
+    from . import distributions as _distributions
+
+    geo = None
+    for sector in detector_model.Sectors:
+        if sector.name == sector_name:
+            geo = sector.geo
+            break
+    if geo is None:
+        available = [s.name for s in detector_model.Sectors]
+        raise ValueError(
+            f"Sector {sector_name!r} not found. Available: {available}"
+        )
+
+    det_position = detector_model.GeoPositionToDetPosition(
+        _detector.GeometryPosition(geo.placement.Position)
+    )
+    det_rotation = geo.placement.Quaternion
+    det_placement = _geometry.Placement(det_position.get(), det_rotation)
+
+    if isinstance(geo, _geometry.Cylinder):
+        cylinder = _geometry.Cylinder(
+            det_placement, geo.Radius, geo.InnerRadius, geo.Z
+        )
+        return _distributions.CylinderVolumePositionDistribution(cylinder)
+    elif isinstance(geo, _geometry.Sphere):
+        sphere = _geometry.Sphere(
+            det_placement, geo.Radius, geo.InnerRadius
+        )
+        return _distributions.SphereVolumePositionDistribution(sphere)
+    else:
+        raise TypeError(
+            f"Sector geometry type {type(geo).__name__} not supported "
+            f"for position distribution"
+        )
+
 
 def list_fluxes():
     return sorted(_get_model_subfolders(_get_base_directory(resource_package_dir(), "fluxes"), _model_regex))
@@ -999,7 +1077,7 @@ def SaveEvents(events,
                   "parent_idx"]:
             datasets[k].append([])
         # loop over interactions
-        id = -1  # guard: if event.tree is empty, num_interactions appends 0
+        id = -1
         for id, datum in enumerate(event.tree):
             datasets["vertex"][-1].append(np.array(datum.record.interaction_vertex,dtype=float))
 
@@ -1031,7 +1109,7 @@ def SaveEvents(events,
             # secondary particle stuff
             datasets["secondary_types"][-1].append([])
             datasets["secondary_momenta"][-1].append([])
-            isec = -1  # guard: if no secondaries, num_secondaries appends 0
+            isec = -1
             for isec, (sec_type, sec_momenta) in enumerate(zip(datum.record.signature.secondary_types,
                                                                datum.record.secondary_momenta)):
                 datasets["secondary_types"][-1][-1].append(int(sec_type))
@@ -1054,3 +1132,4 @@ def SaveEvents(events,
 # Load events from the custom SIREN event format
 def LoadEvents(filename):
     return _dataclasses.LoadInteractionTrees(filename)
+
