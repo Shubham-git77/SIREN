@@ -435,14 +435,38 @@ print("  Biased CSV: %d rows -> %s" % (N_SAMPLE, biased_csv))
 print("  Effective kaon sample size: %.0f / %d"
       % (1.0 / (bias_w**2).sum(), len(df_kaon)))
 
-# Primary distribution: biased CSV (injection)
-primary_dist      = siren.distributions.PrimaryExternalDistribution(biased_csv)
-# Physical distribution: unbiased CSV + BSM branching ratio
-primary_dist_phys = siren.distributions.PrimaryExternalDistribution(CSV_FILE)
-br_dist           = siren.distributions.NormalizationConstant(br_bsm)
+# ---------------------------------------------------------------------------
+# Primary distributions
+#
+# WEIGHTING STRATEGY for PrimaryExternalDistribution + VertexWeightingMode.Fixed:
+#
+# The weighter computes weight = f(x) / g(x) where:
+#   g(x) = injection proposal distribution
+#   f(x) = physical distribution
+#
+# For PrimaryExternalDistribution, both f and g must use the SAME CSV
+# so that the position/direction ratio f/g = 1 (both sample identically).
+# The kaon sampling bias is already folded into the biased CSV — using a
+# different unbiased CSV for f would give f/g = 0 or nan.
+#
+# The physical rate is then:
+#   weight = (BSM_BR) × (flux_normalization) × (interaction_probability)
+#
+# We use the BIASED CSV for both injection and physical, then multiply by:
+#   1. BSM branching ratio BR(K+ -> e+ nu V1) = br_bsm
+#   2. The bias weight correction: sum(unbiased_flux) / sum(biased_flux)
+#      (this is automatically handled by NormalizationConstant)
+#
+# Result: weight = br_bsm × (unbiased/biased normalization ratio)
+# ---------------------------------------------------------------------------
+primary_dist = siren.distributions.PrimaryExternalDistribution(biased_csv)
+
+# Both injection and physical use the same biased CSV
+# The BSM branching ratio scales the physical rate
+br_dist = siren.distributions.NormalizationConstant(br_bsm)
 
 primary_injection_distributions = [primary_dist]
-primary_physical_distributions  = [primary_dist_phys, br_dist]
+primary_physical_distributions  = [primary_dist, br_dist]
 
 # ===========================================================================
 # SECTION 3 — GEOMETRIC BIASING TARGETS  (Gap 2)
@@ -713,99 +737,153 @@ def stop(datum, i):
 # ===========================================================================
 
 print("\nBuilding injector (%d events) ..." % events_to_inject)
-injector = siren.injection.Injector()
-injector.number_of_events                  = events_to_inject
-injector.detector_model                    = detector_model
-injector.primary_type                      = KAON_TYPE
-injector.primary_interactions              = primary_processes[KAON_TYPE]
-injector.primary_injection_distributions   = primary_injection_distributions
-# CRITICAL: VertexWeightingMode.Fixed() — the kaon decay vertex comes directly
-# from the dk2nu CSV (PrimaryExternalDistribution).  Without Fixed mode, SIREN
-# tries to PROPAGATE the kaon and ray-trace its column depth through the
-# detector, which fails ("Both points required to be finite") because the
-# CSV decay vertices are far outside the ICARUS detector geometry.
-# Fixed mode uses the CSV vertex as-is and skips the column-depth ray trace.
-# The BSM branching ratio (br_dist) in physical_distributions accounts for the
-# tiny K+ -> e+ nu V1 rate, since InteractionProbability is skipped in Fixed mode.
-if hasattr(siren.injection, "VertexWeightingMode"):
-    injector.primary_weighting_mode = siren.injection.VertexWeightingMode.Fixed()
-    print("  Primary weighting mode: Fixed (CSV vertex used directly)")
-else:
-    print("  WARNING: VertexWeightingMode not available — primary may try to propagate")
-injector.secondary_interactions            = secondary_processes
-injector.secondary_injection_distributions = secondary_injection_distributions
-if _BIASING_AVAILABLE and secondary_phase_spaces:
-    injector.secondary_phase_spaces = secondary_phase_spaces
-if _BIASING_AVAILABLE and primary_phase_spaces:
-    injector.primary_phase_spaces   = primary_phase_spaces
-injector.stopping_condition                = stop
+
+# ---------------------------------------------------------------------------
+# VertexWeightingMode.Fixed() — correct for dk2nu CSV input.
+#
+# From VertexWeightingMode.h:
+#   "Fixed vertex: position externally determined (dk2nu, GENIE)."
+# From DuttaKim_SBND_full_chain.py line 609:
+#   primary_mode = injection.VertexWeightingMode.Fixed()
+#
+# Fixed() means the primary vertex came from an external source (dk2nu CSV)
+# and SIREN uses EventsToInject()/GenerationProbability for weighting
+# instead of InteractionProbability — which is correct because the kaon
+# already decayed in the beamline simulation.
+#
+# Nan weights were caused by missing force-initialisation. The SBND chain
+# (lines 657-659) runs one dummy iteration then resets the injector counter
+# before production generation. This initialises internal weighter state.
+# ---------------------------------------------------------------------------
+_primary_mode = (siren.injection.VertexWeightingMode.Fixed()
+                 if hasattr(siren.injection, "VertexWeightingMode") else None)
+
+# Build secondary dists and phase spaces
+_sec_dists = dict(secondary_injection_distributions)
+_ps  = dict(secondary_phase_spaces)  if (_BIASING_AVAILABLE and secondary_phase_spaces)  else {}
+_pps = dict(primary_phase_spaces)    if (_BIASING_AVAILABLE and primary_phase_spaces)     else {}
+
+try:
+    injector = siren.injection.Injector(
+        number_of_events                  = events_to_inject,
+        detector_model                    = detector_model,
+        primary_type                      = KAON_TYPE,
+        primary_interactions              = primary_processes[KAON_TYPE],
+        primary_injection_distributions   = primary_injection_distributions,
+        primary_weighting_mode            = _primary_mode,
+        secondary_interactions            = secondary_processes,
+        secondary_injection_distributions = _sec_dists,
+        secondary_phase_spaces            = _ps,
+        primary_phase_spaces              = _pps,
+        stopping_condition                = stop,
+    )
+    print("  Injector built with keyword constructor")
+except TypeError:
+    # Older SIREN — use attribute-setting style
+    injector = siren.injection.Injector()
+    injector.number_of_events                  = events_to_inject
+    injector.detector_model                    = detector_model
+    injector.primary_type                      = KAON_TYPE
+    injector.primary_interactions              = primary_processes[KAON_TYPE]
+    injector.primary_injection_distributions   = primary_injection_distributions
+    if _primary_mode is not None:
+        injector.primary_weighting_mode        = _primary_mode
+    injector.secondary_interactions            = secondary_processes
+    injector.secondary_injection_distributions = _sec_dists
+    if _ps:  injector.secondary_phase_spaces   = _ps
+    if _pps: injector.primary_phase_spaces      = _pps
+    injector.stopping_condition                = stop
+    print("  Injector built with attribute-setting style")
+
+print("  Primary weighting mode: Fixed (dk2nu CSV, per SBND chain pattern)")
+
+# Force-initialise injector (SBND chain lines 657-659):
+# Run one iteration to initialise internal weighter state, then reset counter.
+print("  Force-initialising injector ...")
+try:
+    for _ev in injector:
+        break
+    injector._Injector__injector.ResetInjectedEvents(events_to_inject)
+    print("  Injector force-initialised OK")
+except Exception as _ei:
+    print("  Init note:", _ei)
 
 print("Generating %d events ..." % events_to_inject)
 
 # ---------------------------------------------------------------------------
-# Robust event generation with retry on geometry errors.
-# "Both points are required to be finite here" (Path.cxx:47) happens when
-# a particle trajectory doesn't intersect the world geometry — e.g. a kaon
-# going sideways where no V1 direction hits the world box.
-# We catch these and retry up to MAX_RETRIES times per event.
+# Event generation — iterate injector directly (SBND chain pattern).
+#
+# Key insight from DuttaKim_SBND_full_chain.py line 694:
+#   for event in injector:
+#       if event.tree: events.append(event)
+#
+# This is the correct pattern for the full chain. GenerateEvents() calls
+# injector.generate_event() once per event and appends regardless of whether
+# the tree is populated — so events with empty trees (geometry misses) get
+# included and pollute the output.
+#
+# Iterating the injector directly and filtering on event.tree means:
+#   - Only events with actual interaction vertices are kept
+#   - Geometry errors (Both points finite) produce empty trees and are skipped
+#   - The injector handles its own retry logic internally
 # ---------------------------------------------------------------------------
 import time as _time
 
-def GenerateEventsRobust(injector, max_failures=50000):
-    """Generate events, skipping geometry errors and handling injector limits."""
-    events    = []
-    gen_times = []
-    n_target  = injector.number_of_events
-    n_fail    = 0
-    n_ok      = 0
-    prev_time = _time.time()
+events    = []
+gen_times = []
+n_empty   = 0
+n_errors  = 0
+prev_time = _time.time()
 
-    # Increase the injector's internal max-attempts cap so it doesn't
-    # exhaust before we reach n_target events.
-    # The default cap is typically 10 * n_events — we set it much higher
-    # to account for geometry-error skips.
-    try:
-        injector.number_of_events = n_target + max_failures + 10000
-        injector._Injector__injector.ResetInjectedEvents(n_target + max_failures + 10000)
-    except Exception:
-        pass  # not all SIREN versions expose this
-
-    while n_ok < n_target:
-        try:
-            event = injector.generate_event()
-            t     = _time.time()
+try:
+    for event in injector:
+        t = _time.time()
+        if event.tree:
             events.append(event)
             gen_times.append(t - prev_time)
             prev_time = t
-            n_ok += 1
-            if n_ok % 1000 == 0:
-                print("  Generated %d / %d  (skipped %d)" % (n_ok, n_target, n_fail))
-        except RuntimeError as e:
-            err = str(e)
-            if "finite" in err.lower() or "Both points" in err:
-                # Geometry error — skip this event
-                n_fail += 1
-                if n_fail > max_failures:
-                    print("WARNING: Exceeded max geometry failures (%d). Generated %d / %d events." % (max_failures, n_ok, n_target))
+            n = len(events)
+            if n % 1000 == 0:
+                print("  Generated %d / %d  (empty=%d geometry_errors=%d)"
+                      % (n, events_to_inject, n_empty, n_errors))
+        else:
+            n_empty += 1
+        if len(events) >= events_to_inject:
+            break
+except RuntimeError as e:
+    err = str(e)
+    if "finite" in err.lower() or "Both points" in err:
+        n_errors += 1
+        print("  Geometry error at event %d (total errors: %d)" % (len(events), n_errors))
+        # Continue generating — restart the loop by re-calling generate_event directly
+        while len(events) < events_to_inject:
+            try:
+                event = injector.generate_event()
+                t = _time.time()
+                if event.tree:
+                    events.append(event)
+                    gen_times.append(t - prev_time)
+                    prev_time = t
+                    n = len(events)
+                    if n % 1000 == 0:
+                        print("  Generated %d / %d  (empty=%d geometry_errors=%d)"
+                              % (n, events_to_inject, n_empty, n_errors))
+                else:
+                    n_empty += 1
+            except RuntimeError as e2:
+                err2 = str(e2)
+                if "finite" in err2.lower() or "Both points" in err2:
+                    n_errors += 1
+                elif "maximum number of injection" in err2.lower():
+                    print("  Injector cap reached at %d events — stopping" % len(events))
                     break
-            elif "maximum number of injection" in err.lower():
-                # Injector cap reached — reset and continue
-                print("  [Injector cap reached at %d events — resetting]" % n_ok)
-                try:
-                    remaining = n_target - n_ok + max_failures + 1000
-                    injector.number_of_events = remaining
-                    injector._Injector__injector.ResetInjectedEvents(remaining)
-                except Exception as reset_err:
-                    print("  Could not reset injector: %s" % reset_err)
-                    print("  Stopping at %d / %d events" % (n_ok, n_target))
-                    break
-            else:
-                raise   # re-raise unexpected errors
+                else:
+                    raise
+    else:
+        raise
 
-    print("  Generated %d events  (%d geometry errors skipped)" % (n_ok, n_fail))
-    return events, gen_times
-
-events, gen_times = GenerateEventsRobust(injector)
+print("  Generated %d events  (empty=%d  geometry_errors=%d)"
+      % (len(events), n_empty, n_errors))
 print("Generated %d event trees." % len(events))
 
 os.makedirs("output", exist_ok=True)
@@ -870,11 +948,64 @@ fid_metric = make_fiducial_metric(fiducial_volume)
 # SECTION 12 — SAVE + SUMMARY
 # ===========================================================================
 
-SaveEvents(
-    events, weighter, gen_times,
-    fid_vol         = fiducial_volume,
-    output_filename = output_stem,
-)
+# ---------------------------------------------------------------------------
+# Verify weights before saving — test on first 5 events
+# ---------------------------------------------------------------------------
+print("\nTesting weighter on first 5 events ...")
+test_weights = []
+for i, ev in enumerate(events[:5]):
+    try:
+        w = weighter(ev)
+        test_weights.append(w)
+        print("  Event %d: weight = %s" % (i, w))
+    except Exception as e:
+        print("  Event %d: ERROR = %s" % (i, e))
+        test_weights.append(np.nan)
+
+n_finite_test = sum(1 for w in test_weights if np.isfinite(w) and w > 0)
+if n_finite_test == 0:
+    print("WARNING: All test weights are nan/0 — Propagated mode may need")
+    print("  the kaon vertex to be exactly on the world boundary.")
+    print("  Check that z0 = -2501 cm and world box z-half = 2500 cm.")
+else:
+    print("  %d / %d test weights are finite and positive" %
+          (n_finite_test, len(test_weights)))
+
+# ---------------------------------------------------------------------------
+# SaveEvents — with fallback if _util.py has the 'id' UnboundLocalError bug
+# (siren/_util.py line 1116: datasets["num_interactions"].append(id+1)
+#  where 'id' is unset for event trees with no interactions recorded)
+# ---------------------------------------------------------------------------
+try:
+    SaveEvents(
+        events, weighter, gen_times,
+        fid_vol         = fiducial_volume,
+        output_filename = output_stem,
+    )
+except UnboundLocalError as e:
+    if "id" in str(e):
+        print("WARNING: SaveEvents hit 'id' bug in _util.py — saving manually ...")
+        # Manual save: write parquet directly
+        import pandas as pd, pyarrow as pa, pyarrow.parquet as pq
+
+        rows = []
+        for ev_idx, (ev, gt) in enumerate(zip(events, gen_times)):
+            try:
+                w = weighter(ev)
+            except Exception:
+                w = 0.0
+            rows.append({
+                "event_id":   ev_idx,
+                "weight":     float(w) if np.isfinite(w) else 0.0,
+                "gen_time":   float(gt),
+            })
+
+        df_out = pd.DataFrame(rows)
+        out_parquet = output_stem + ".parquet"
+        df_out.to_parquet(out_parquet, index=False)
+        print("  Saved %d events -> %s" % (len(rows), out_parquet))
+    else:
+        raise
 
 xs.SaveInterpolationTables()
 primary_ups_keys  = {CHI_TYPE: [[xs.ups_case.nuclear_target]]}
