@@ -258,9 +258,14 @@ class VectorPortalUpsCase:
         propagator = 1.0 / (Q2 + mV**2)**2
         M2 = self.g_D**2 * 4.0 * math.pi * _ALPHA_EM * self.epsilon**2 * numerator * propagator
         F2 = _helm_F2(Q2, self.A)
-        Q_eff_sq = (self.Z * self.epsilon)**2 if self.scattering_regime == "coherent" else 1.0
+        # Q_eff = Z for the dark-photon model (Appendix B, Eq. B6). The kinetic
+        # mixing epsilon enters ONCE, through |M|^2 above (the e*epsilon*g_D
+        # coupling at the nuclear vertex). The previous (Z*epsilon)^2 here
+        # double-counted the mixing; it was also never applied to dsig, which
+        # dropped the Z^2 coherent enhancement entirely. Both fixed below.
+        Q_eff_sq = self.Z**2 if self.scattering_regime == "coherent" else 1.0
 
-        dsig = M2 * F2 / (16.0 * math.pi * flux_sq)
+        dsig = Q_eff_sq * M2 * F2 / (16.0 * math.pi * flux_sq)
         return max(0.0, dsig) * _GEV2_TO_CM2
 
     def diff_xsec_Q2(self, E, Q2):
