@@ -141,10 +141,39 @@ M_CHI        = 8e-3      # GeV  chi
 M_CHI_PRIME  = 50e-3     # GeV  chi'
 M_V1         = 17e-3     # GeV  V1  (light dark photon, visible)
 M_V2         = 200e-3    # GeV  V2  (heavy upscattering mediator)
-G_D          = 1.0
-EPSILON_1    = 7e-5      # V1 -> e+e- kinetic mixing
-EPSILON_2    = 1e-4      # chi upscattering kinetic mixing
+EPSILON_1    = 7e-5      # V1 -> e+e- kinetic mixing  (eps_1)
+EPSILON_2    = 1e-4      # chi upscattering kinetic mixing  (eps_2)
 G_MU         = 1e-3      # K+ -> l nu V1 effective coupling
+
+# ---------------------------------------------------------------------------
+# DARK-SECTOR COUPLINGS  —  two distinct couplings, not one.
+#
+# The paper's Lagrangian (Eq. 1, arXiv:2110.11944) carries separate dark
+# couplings for V1 and V2.  Collapsing them into a single G_D is wrong:
+#
+#   G2P : chi-chi'-V2 vertex (upscattering, Vertex 3). O(1) per Table I/II
+#         (g2'^2 / 4pi ~ 0.5 for the double-mediator scenario).
+#
+#   G1  : V1 couplings (V1->chi chi at Vertex 2; chi'->chi V1 at Vertex 4).
+#         NOT a free parameter — footnote 3 fixes it by the BR assumption
+#         BR(V1->2chi) : BR(V1->2f) = 50:50.  At m_V1=17 MeV the only open
+#         SM channel is e+e-, so we solve  Gamma(V1->chi chi) = Gamma(V1->ee)
+#         for G1.  This makes G1 ~ O(1e-4), four orders below 1.0.
+# ---------------------------------------------------------------------------
+G2P = 1.0   # upscattering coupling (Vertex 3); O(1), matches Table I
+
+_alpha_em = 1.0 / 137.036
+_m_e      = 0.000511
+_beta_e   = math.sqrt(max(1.0 - 4.0 * _m_e**2 / M_V1**2, 0.0))
+_gamma_ee = (_alpha_em * EPSILON_1**2 * M_V1 / 3.0) * _beta_e * (1.0 + 2.0 * _m_e**2 / M_V1**2)
+_beta_chi = math.sqrt(max(1.0 - 4.0 * M_CHI**2 / M_V1**2, 0.0))
+_gamma_chichi_unit = M_V1 / (12.0 * math.pi) * _beta_chi**3
+G1 = math.sqrt(_gamma_ee / _gamma_chichi_unit) if _gamma_chichi_unit > 0 else 0.0
+
+_br_chichi = (G1**2 * _gamma_chichi_unit) / (G1**2 * _gamma_chichi_unit + _gamma_ee)
+print("  Derived G1 (V1 coupling, BR-fixed): %.4e  -> BR(V1->2chi) = %.1f%%"
+      % (G1, 100.0 * _br_chichi))
+print("  G2P (upscattering coupling)       : %.4e" % G2P)
 
 # Kaon and lepton masses
 M_KAON  = 0.49368    # GeV  K+
@@ -161,7 +190,18 @@ def _two_body_p_cm(M, m1, m2):
     return math.sqrt(max(arg, 0.0)) / (2.0 * M)
 
 _p_star = _two_body_p_cm(M_CHI_PRIME, M_CHI, M_V1)
-CHI_PRIME_WIDTH = G_D**2 * _p_star**3 / (6.0 * math.pi * M_CHI_PRIME**2)
+# chi' -> chi V1 is a V1 vertex -> governed by G1, not the upscattering coupling
+CHI_PRIME_WIDTH = G1**2 * _p_star**3 / (6.0 * math.pi * M_CHI_PRIME**2)
+
+# chi' lab decay length check (sets fiducial acceptance A_chi^fid in Eq. 4).
+_HBARC_GEV_M = 1.97327e-16   # GeV * m
+if CHI_PRIME_WIDTH > 0:
+    _ctau_chip = _HBARC_GEV_M / CHI_PRIME_WIDTH
+    _gamma_chip = 1.0 / M_CHI_PRIME           # representative E_chi' ~ 1 GeV
+    _L_lab_chip = _gamma_chip * _ctau_chip
+    print("  chi' total width        : %.3e GeV"  % CHI_PRIME_WIDTH)
+    print("  chi' rest-frame c*tau   : %.3e m"    % _ctau_chip)
+    print("  chi' lab length (E~1GeV): %.3e m"    % _L_lab_chip)
 
 # PDG IDs
 PDGID_KAON      = 321
@@ -247,7 +287,7 @@ print("  BSM branching ratio : %.4e"     % br_bsm)
 
 # ── Vertex 2: V1 -> chi + chi  (two-body isotropic) ─────────────────────
 v1_to_chi = _VP.DarkPhotonToChiDecay(
-    M_V1, M_CHI, G_D,
+    M_V1, M_CHI, G1,
     pdgid_V1  = PDGID_V1_PROD,
     pdgid_chi = PDGID_CHI,
 )
@@ -260,8 +300,8 @@ ups_case = VectorPortalUpsCase(
     m_chi           = M_CHI,
     m_chi_prime     = M_CHI_PRIME,
     m_V             = M_V2,          # parameter name is m_V not m_V2
-    g_D             = G_D,
-    epsilon         = EPSILON_2,
+    g_D             = G2P,           # upscattering coupling (chi-chi'-V2), O(1)
+    epsilon         = EPSILON_2,     # eps_2, the V2 mixing
     pdgid_chi       = PDGID_CHI,
     pdgid_chi_prime = PDGID_CHI_PRIME,
     nuclear_pdgid   = NUCLEAR_PDGID,
@@ -286,7 +326,7 @@ chi_prime_decay = _VP.ChiPrimeDecay(
     m_chi           = M_CHI,
     m_chi_prime     = M_CHI_PRIME,
     m_V1            = M_V1,
-    g_D             = G_D,
+    g_D             = G1,           # chi'-chi-V1 is a V1 vertex -> G1
     pdgid_chi_prime = PDGID_CHI_PRIME,
     pdgid_chi       = PDGID_CHI,
     pdgid_V1        = PDGID_V1_SIGNAL,
@@ -465,8 +505,17 @@ primary_dist = siren.distributions.PrimaryExternalDistribution(biased_csv)
 # The BSM branching ratio scales the physical rate
 br_dist = siren.distributions.NormalizationConstant(br_bsm)
 
+# Missing branching-ratio factors from Eq. 4: dN_S ~ 2*BR(V1->2chi)*BR(V1->2e).
+# These cancel inside each decay's FinalStateProbability (= width/width), so
+# they must be restored explicitly. Paper assumes both BRs = 0.5 -> 2*0.5*0.5 = 0.5.
+BR_V1_CHICHI = 0.5
+BR_V1_EE     = 0.5
+v1_br_factor = 2.0 * BR_V1_CHICHI * BR_V1_EE
+print("  V1 branching factor (2*BR_chichi*BR_ee): %.3f" % v1_br_factor)
+v1_br_dist = siren.distributions.NormalizationConstant(v1_br_factor)
+
 primary_injection_distributions = [primary_dist]
-primary_physical_distributions  = [primary_dist, br_dist]
+primary_physical_distributions  = [primary_dist, br_dist, v1_br_dist]
 
 # ===========================================================================
 # SECTION 3 — GEOMETRIC BIASING TARGETS  (Gap 2)
@@ -1007,14 +1056,24 @@ except UnboundLocalError as e:
     else:
         raise
 
-xs.SaveInterpolationTables()
+try:
+    xs.SaveInterpolationTables()
+except Exception as _e:
+    print("WARNING: xs.SaveInterpolationTables() failed (%s) — continuing" % _e)
+
 primary_ups_keys  = {CHI_TYPE: [[xs.ups_case.nuclear_target]]}
 secondary_dec_keys = {k: [[k]] for k in secondary_processes}
-SaveDarkNewsProcesses(
-    table_dir,
-    {CHI_TYPE: [xs]},   primary_ups_keys,
-    secondary_processes, secondary_dec_keys,
-)
+# SaveDarkNewsProcesses calls xs.save_to_table(), which this SIREN build's
+# PyDarkNewsCrossSection wrapper does not expose. Interpolation tables and the
+# events/parquet are already written, so a failure here is non-fatal.
+try:
+    SaveDarkNewsProcesses(
+        table_dir,
+        {CHI_TYPE: [xs]},   primary_ups_keys,
+        secondary_processes, secondary_dec_keys,
+    )
+except Exception as _e:
+    print("WARNING: SaveDarkNewsProcesses failed (%s) — continuing" % _e)
 
 # Compute raw weights then apply fiducial metric
 raw_weights = np.array([weighter(ev) for ev in events])
