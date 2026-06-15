@@ -859,15 +859,21 @@ class MesonThreeBodySIRENDecay(_Decay):
             E_nu_rf = P_nu[0]
             E_phi_rf = P_phi[0]
         else:
-            beta = p_parent / E_parent
-            gamma = E_parent / parent_mass
-            beta_hat = P_parent[1:] / p_parent
-
-            p_nu_par = float(np.dot(P_nu[1:], beta_hat))
-            E_nu_rf = gamma * (P_nu[0] - beta * p_nu_par)
-
-            p_phi_par = float(np.dot(P_phi[1:], beta_hat))
-            E_phi_rf = gamma * (P_phi[0] - beta * p_phi_par)
+            # Rest-frame energy via the Lorentz invariant E_rf = (p_parent . p_sec) / M_parent.
+            # The naive component boost gamma*(E_lab - beta*p_par) is a small
+            # difference of large numbers for an ultralight, forward-boosted phi
+            # (m_phi = 1 MeV, gamma_parent large) and collapses to floating-point
+            # noise -> matel_sq evaluated at a garbage E_phi_rf -> runaway weight.
+            # The 4-vector dot product is the same quantity grouped stably.
+            inv_M = 1.0 / parent_mass if parent_mass > 0 else 0.0
+            E_nu_rf = (E_parent * P_nu[0]
+                       - float(np.dot(P_parent[1:], P_nu[1:]))) * inv_M
+            E_phi_rf = (E_parent * P_phi[0]
+                        - float(np.dot(P_parent[1:], P_phi[1:]))) * inv_M
+            # Clamp phi rest-frame energy to its physical floor (on-shell);
+            # residual numerical undershoot below m_phi must not leak through.
+            if E_phi_rf < m_phi:
+                E_phi_rf = m_phi
 
         if E_nu_rf < 0 or E_phi_rf < m_phi:
             return 0.0
@@ -1335,7 +1341,7 @@ def build_phi_flux(
         if E_meson < m_meson:
             continue
 
-        meson_flux = raw_flux.EvaluatePDF(E_nu)
+        meson_flux = raw_flux.SampleUnnormedPDF(E_nu)
         if meson_flux <= 0.0:
             continue
 

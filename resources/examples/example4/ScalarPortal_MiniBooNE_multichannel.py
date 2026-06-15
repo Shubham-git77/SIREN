@@ -50,9 +50,13 @@ _DK = _util.load_module("DuttaKim_Dk2nuReader",
 _DP = _util.load_module("DuttaKim_DarkPrimakoff",
                         os.path.join(_PROC_DIR, "DarkPrimakoff.py"))
 
-# Validated production normalization constant (scalar uses the same C-R-style
-# convention bridge; CALIB applies to the three-body production rate).
-CALIB_SCALAR = getattr(_MESON, "CALIB_VECTOR", 2412.0)
+# Scalar production normalization. The vector model needed an empirical
+# constant (2412) to bridge the C-R vector convention to Table II. The scalar
+# ME (_matel_sq_scalar) matches C-R Eq.25 DIRECTLY, so it should NOT carry the
+# vector's bridge factor. Set to 1.0 until validated against the paper's
+# scalar production prediction (Fig.4 / Table II scalar rows).
+# TODO: validate BR(K->mu nu phi) against the paper and set this if needed.
+CALIB_SCALAR = 1.0
 
 # ------------------------------------------------------------------ #
 #  Constants                                                           #
@@ -119,6 +123,14 @@ CHANNELS = {
     "pi_mu": (211, M_PION, M_MUON, -13, 14, GAMMA_PION_SM),
 }
 
+# Flux tag for build_phi_flux (keys on neutrino flavor of the production channel).
+CHANNEL_FLUX_TAG = {
+    "K_e":   "FHC_nue",
+    "K_mu":  "FHC_numu",
+    "pi_e":  "FHC_nue",
+    "pi_mu": "FHC_numu",
+}
+
 
 def _mc(channels, weights):
     m = injection.MultiChannelPhaseSpace()
@@ -128,11 +140,19 @@ def _mc(channels, weights):
 
 
 def meson_bias(E, px, py, pz, vx, vy, vz):
-    """Forward/energetic bias (same form as the SBND default_pion_bias)."""
+    """Forward/energetic importance bias for the parent meson.
+
+    NOTE: the vector script used E**2 * cos, tuned to the steeply-falling
+    chi spectrum. The scalar phi flux is flatter in energy, so E**2 OVER-biases
+    toward high-E forward production and leaves the populated moderate-E /
+    moderate-angle region undersampled -> a few events there carry runaway
+    importance weights (heavy weight tail). A gentler bias (E**1, softer cos
+    floor) matches the phi flux better and keeps the weights flat.
+    """
     p = np.sqrt(px**2 + py**2 + pz**2)
     cos_theta = np.divide(pz, p, out=np.zeros_like(p), where=(p > 0))
     r_trans = np.sqrt(vx**2 + vy**2)
-    return E**2 * np.maximum(cos_theta, 0.01) * np.exp(-r_trans / 200.0)
+    return E**1.5 * np.maximum(cos_theta, 0.02) * np.exp(-r_trans / 200.0)
 
 
 # ------------------------------------------------------------------ #
@@ -220,7 +240,7 @@ def build_primary_phase_spaces(targets, meson_decay):
                 target, directed_index=2,
                 mass_mode=mode,
                 resonance_mass=0.0, resonance_width=0.0,
-                power_law_nu=-8.6, power_law_offset=0.0,
+                power_law_nu=-2.0, power_law_offset=0.0,
                 topology=injection.PhaseSpaceTopology.Decay3Body,
                 mass_cdf_nodes=(cdf_nodes if use_tab else []),
                 mass_cdf_values=(cdf_values if use_tab else [])))
@@ -247,6 +267,18 @@ def build_onshell_phase_spaces(targets, models):
         PHI: {prim_sig: _mc([
             injection.PhysicalCrossSectionChannel(m["primakoff"], prim_sig)], [1.0])},
     }
+
+
+def build_primary_primakoff_phase_spaces(targets, models):
+    """Phi-as-primary architecture: the Dark Primakoff phi N -> gamma N is the
+    PRIMARY interaction (phi injected directly from build_phi_flux). The phi is
+    already aimed at the detector by FixedDirection + PointSource, so the scatter
+    phase space is just the physical cross-section channel (no DetectorDirected
+    channel -- that one is Decay2Body topology and clashes with Scatter2to2)."""
+    m = models["models"]
+    prim_sig = m["primakoff"].GetPossibleSignatures()[0]
+    return {prim_sig: _mc(
+        [injection.PhysicalCrossSectionChannel(m["primakoff"], prim_sig)], [1.0])}
 
 
 def onshell_stopping_condition(datum, i):
@@ -333,55 +365,68 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
     targets = build_geometric_targets(detector_model, fiducial_box)
     chain = build_onshell_models(parent_pdg, m_meson, m_lepton, lepton_pdg, nu_pdg)
     meson_decay = chain["meson_decay"]
-    secondary_interactions = chain["secondary_interactions"]
-    phase_spaces = build_onshell_phase_spaces(targets, chain)
-    primary_ps = build_primary_phase_spaces(targets, meson_decay)
+    primakoff = chain["models"]["primakoff"]
 
+    # --- PHI-AS-PRIMARY ARCHITECTURE (mirrors the vector portal) -------------
+    # The K/pi -> l nu phi production is precomputed into a phi flux at the
+    # detector (build_phi_flux convolves the parent meson spectrum with the
+    # validated three-body differential rate and boosts to lab).  We then
+    # inject phi (5919) DIRECTLY with that flux and make the Dark Primakoff
+    # phi N -> gamma N the PRIMARY interaction.  This removes the live meson-
+    # decay vertex whose isotropic phys/gen mismatch produced the ~1e9 weight
+    # spike for forward phi -- exactly how the vector portal stays well-behaved.
     bsm_width = meson_decay._total_width
     br_bsm = bsm_width / gamma_sm
     print("  BSM 3-body width: %.4e GeV   SM 2-body width: %.4e   BR: %.4e"
           % (bsm_width, gamma_sm, br_bsm))
 
-    meson_dist = load_dk2nu_mesons(dk2nu_data, parent_pdg, detector_model)
-    primary_dists = [meson_dist]
-    br_dist = distributions.NormalizationConstant(br_bsm)
-    physical_dists = [meson_dist, br_dist]
-    primary_mode = injection.VertexWeightingMode.Fixed()
+    flux_tag = CHANNEL_FLUX_TAG[name]
+    print("  Building phi flux (build_phi_flux, tag=%s) ..." % flux_tag)
+    phi_flux = _MESON.build_phi_flux(
+        m_meson=m_meson, m_lepton=m_lepton, m_phi=M_PHI,
+        g_mu=G_MU_PROD, mediator_type="scalar",
+        flux_tag=flux_tag, min_energy=0.0, max_energy=3.0,
+        n_bins=50, physically_normalized=True)
 
-    sv = distributions.SecondaryPhysicalVertexDistribution()
-    sv_bounded = distributions.SecondaryBoundedVertexDistribution(fiducial_box)
-    sec_dists = {pt: [sv] for pt in secondary_interactions}
-    sec_dists[PHI] = [sv_bounded]      # bound the phi->gamma vertex to fiducial
+    # Primakoff as a PRIMARY process, detector-directed toward the targets.
+    primary_primakoff_ps = build_primary_primakoff_phase_spaces(targets, chain)
+
+    # Injection distributions: mass + flux + direction + position.
+    # Physical distributions: same MINUS position, PLUS the BSM branching-ratio
+    # normalization that the precomputed flux does not itself carry.
+    from siren.math import Vector3D as _V3
+    _SRC = [0.0, 0.0, 0.0]
+    _MAXD = 50.0
+    primary_injection_distributions = [
+        distributions.PrimaryMass(M_PHI), phi_flux,
+        distributions.FixedDirection(_V3(0.0, 0.0, 1.0)),
+        distributions.PointSourcePositionDistribution(_SRC, _MAXD),
+    ]
+    br_dist = distributions.NormalizationConstant(br_bsm)
+    primary_physical_distributions = [
+        distributions.PrimaryMass(M_PHI), phi_flux,
+        distributions.FixedDirection(_V3(0.0, 0.0, 1.0)),
+        br_dist,
+    ]
 
     print("  Building injector (%d events) ..." % n_events)
     injector = Injector(
         number_of_events=n_events, detector_model=detector_model, seed=42,
-        primary_type=PT(parent_pdg), primary_interactions=[meson_decay],
-        primary_injection_distributions=primary_dists,
-        primary_weighting_mode=primary_mode,
-        secondary_interactions=secondary_interactions,
-        secondary_injection_distributions=sec_dists,
-        secondary_phase_spaces=phase_spaces,
-        primary_phase_spaces=primary_ps,
-        stopping_condition=onshell_stopping_condition,
+        primary_type=PHI, primary_interactions=[primakoff],
+        primary_injection_distributions=primary_injection_distributions,
+        primary_phase_spaces=primary_primakoff_ps,
     )
-    # Force-init, tolerant of a pathological first event (must not leave the
-    # level stack half-entered).
+    # Force-init, tolerant of a pathological first event.
     try:
         for ev in injector:
             break
     except RuntimeError as e:
         print("  (force-init first event threw: %r — continuing)" % e)
-    try:
-        injector._Injector__injector.ResetInjectedEvents(n_events)
-    except Exception:
-        pass
 
     weighter = Weighter(
         injectors=[injector], detector_model=detector_model,
-        primary_type=PT(parent_pdg), primary_interactions=[meson_decay],
-        primary_physical_distributions=physical_dists,
-        secondary_interactions=secondary_interactions,
+        primary_type=PHI, primary_interactions=[primakoff],
+        primary_physical_distributions=primary_physical_distributions,
     )
 
     print("  Generating events ...")
@@ -405,10 +450,102 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
         print("  (skipped %d kinematically pathological events)" % n_skipped)
     print("  Generated %d events" % len(events))
 
+    # Normalize the weighter by the ACTUAL number of events generated, so the
+    # rate is invariant to n_events (acceptance-limited generation otherwise
+    # makes sum(w) scale as 1/n_events). Use the raw generated count = events
+    # that came out of the injector (successful GenerateEvent calls).
+    n_generated = len(events)
+    try:
+        injector._Injector__injector.ResetInjectedEvents(max(n_generated, 1))
+    except Exception:
+        pass
+
     raw = np.array([weighter(ev) for ev in events])
     oil_volume = _oil(); fid_volume = _fiducial()
     n_oil = int(np.sum([primakoff_in_oil(ev, oil_volume) for ev in events]))
     print("  [diag] Primakoff gamma on C/H in oil: %d" % n_oil)
+
+    # ---- TEMP normalization diagnostic ----
+    _prim = chain["models"]["primakoff"]
+    print("  [diag] standalone sigma(0.5 GeV) = %.4e cm^2"
+          % _prim._dp.total_xsec(0.5))
+    _pos = raw[np.isfinite(raw) & (raw > 0)]
+    if len(_pos):
+        print("  [diag] raw weight: min=%.3e median=%.3e max=%.3e mean=%.3e"
+              % (_pos.min(), np.median(_pos), _pos.max(), _pos.mean()))
+        _med = np.median(_pos)
+        # Does a single event dominate the sum? (one-event-estimate test)
+        _sum = _pos.sum()
+        _topfrac = _pos.max() / _sum if _sum > 0 else float("nan")
+        print("  [diag] top event is %.1f%% of sum(raw>0)   (N_pos=%d)"
+              % (100.0 * _topfrac, len(_pos)))
+        # Identify and dump the kinematics of the single max-weight event.
+        # raw can contain non-finite/<=0 entries, so mask before argmax.
+        _safe = np.where(np.isfinite(raw) & (raw > 0), raw, -np.inf)
+        _imax = int(np.argmax(_safe))
+        _ev = events[_imax]
+        print("  [diag] MAX-weight event idx=%d  w=%.3e  (%.0fx median)"
+              % (_imax, raw[_imax], raw[_imax] / _med if _med > 0 else float("nan")))
+        # Pull the PRIMARY meson 4-momentum from the first datum's record,
+        # using the same record API the observable extractors use.
+        try:
+            _prec = _ev.tree[0].record
+            _pmom = _prec.primary_momentum   # [E, px, py, pz] in GeV
+            _E  = _pmom[0]
+            _px, _py, _pz = _pmom[1], _pmom[2], _pmom[3]
+            _pmag = math.sqrt(_px**2 + _py**2 + _pz**2)
+            _cth = (_pz / _pmag) if _pmag > 0 else 0.0
+            try:
+                _vtx = _prec.interaction_vertex
+                _rt = math.sqrt(_vtx[0]**2 + _vtx[1]**2)
+            except Exception:
+                _rt = float("nan")
+            _ptype = int(_prec.signature.primary_type)
+            print("  [diag]   primary pdg=%d  E=%.4f GeV  cos_theta=%.5f  "
+                  "r_trans=%.3f m  bias~%.3e"
+                  % (_ptype, _E, _cth, _rt,
+                     (_E**1.5 * max(_cth, 0.02) * math.exp(-_rt / 200.0))))
+        except Exception as _e:
+            print("  [diag]   (could not read primary kinematics: %r)" % _e)
+
+        # --- Decompose the max-weight event over its interaction tree. ---
+        # The runaway is suspected to be a Lorentz-boost / phase-space Jacobian
+        # on the ULTRALIGHT phi (M_PHI=1 MeV -> gamma_phi = E_phi/M_PHI can be
+        # ~1000s for a multi-GeV forward phi). Print each vertex's secondaries,
+        # their energies, and the phi boost factor so the blown-up vertex is
+        # obvious.
+        try:
+            print("  [diag]   --- tree decomposition of max-weight event ---")
+            for _di, _datum in enumerate(_ev.tree):
+                _r = _datum.record
+                _sig = _r.signature
+                _prim_t = int(_sig.primary_type)
+                _sec_t = [int(s) for s in _sig.secondary_types]
+                try:
+                    _pe = _r.primary_momentum[0]
+                except Exception:
+                    _pe = float("nan")
+                # gamma factor if the primary at this vertex is the phi (5919)
+                _gam = (_pe / M_PHI) if (_prim_t == 5919 and M_PHI > 0) else float("nan")
+                _se = []
+                try:
+                    for _i in range(len(_sec_t)):
+                        _se.append(_r.secondary_momenta[_i][0])
+                except Exception:
+                    pass
+                print("  [diag]     vtx%d  prim=%d (E=%.4f, gamma_phi=%.1f)  "
+                      "secs=%s  E_secs=%s"
+                      % (_di, _prim_t, _pe, _gam, _sec_t,
+                         ["%.4f" % e for e in _se]))
+                for _i, _e2 in enumerate(_se):
+                    if np.isfinite(_e2) and _e2 > 50.0:   # >50 GeV is unphysical here
+                        _stp = _sec_t[_i] if _i < len(_sec_t) else -1
+                        print("  [diag]       !! secondary %d E=%.3f GeV "
+                              "EXCEEDS sane range -> boost/Jacobian blow-up"
+                              % (_stp, _e2))
+        except Exception as _e:
+            print("  [diag]   (tree decomposition failed: %r)" % _e)
+    # ---- end diagnostic ----
 
     Ev, cs, wv = [], [], []
     for ev, w in zip(events, raw):

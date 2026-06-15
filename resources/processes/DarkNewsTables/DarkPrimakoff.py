@@ -98,14 +98,23 @@ class DarkPrimakoffScattering:
     def _matel_sq(self, s, t):
         m_a = self.m_phi
         M   = self.MA
-        num = (2.0 * M ** 2 * (m_a ** 2 - 2.0 * s - t)
-               + 2.0 * M ** 4
-               - 2.0 * m_a ** 2 * (s + t)
-               + m_a ** 4 + 2.0 * s ** 2 + 2.0 * s * t + t ** 2)
+        # Eq. (C2) has a leading factor of t multiplying the bracket:
+        #   |M|^2 = g_n^2 lambda^2 * t * { ... } / [2 (t - m_Zp^2)^2]
+        # In the (+---) convention t<0 (spacelike); the physically positive
+        # combination is |t| = -t = Q^2 (the bracket is dominated by +2 m_N^4,
+        # so |M|^2 must use Q^2 to stay positive). This leading Q^2 also
+        # restores correct dimensions (lambda^2[GeV^-2] * Q^2[GeV^2] *
+        # {GeV^4}/{GeV^4} = dimensionless) and was the missing ~|t| factor.
+        Q2 = -t
+        bracket = (2.0 * M ** 2 * (m_a ** 2 - 2.0 * s - t)
+                   + 2.0 * M ** 4
+                   - 2.0 * m_a ** 2 * (s + t)
+                   + m_a ** 4 + 2.0 * s ** 2 + 2.0 * s * t + t ** 2)
         den = 2.0 * (t - self.m_Zp ** 2) ** 2
         if den <= 0.0:
             return 0.0
-        return max(num / den, 0.0) * self.g_n ** 2 * self.lam ** 2
+        val = self.g_n ** 2 * self.lam ** 2 * Q2 * bracket / den
+        return max(val, 0.0)
 
     # ---- t-range for a(p) N -> gamma(massless) N ----
     def _t_range(self, s):
@@ -274,10 +283,16 @@ class DarkPrimakoffUpsCase(_CrossSection):
             record = arg1
             primary = np.array(record.primary_momentum, dtype=float)
             photon = np.array(record.secondary_momenta[0], dtype=float)
-            m1sq = max(0.0, primary[0]**2 - float(np.dot(primary[1:], primary[1:])))
-            m3sq = max(0.0, photon[0]**2 - float(np.dot(photon[1:], photon[1:])))
-            p1p3 = primary[0] * photon[0] - float(np.dot(primary[1:], photon[1:]))
-            Q2 = max(0.0, -(m1sq + m3sq - 2.0 * p1p3))
+            # Q2 = -t = -(p_phi - p_gamma)^2.  The naive (m1sq + m3sq - 2*p1p3)
+            # form suffers catastrophic cancellation for the ultralight scalar
+            # (m_phi = 1 MeV) in the forward limit, where 2*p1p3 -> m_phi^2 and
+            # the reconstructed Q2 becomes floating-point noise -> runaway event
+            # weight.  Compute t from the difference 4-vector instead, which is
+            # numerically stable for any mediator mass.
+            dE = primary[0] - photon[0]
+            dp = primary[1:] - photon[1:]
+            t = dE * dE - float(np.dot(dp, dp))
+            Q2 = max(0.0, -t)
             energy = record.primary_momentum[0]
         return float(np.real(self._dp.diff_xsec_Q2(energy, Q2)))
 
@@ -323,19 +338,39 @@ class DarkPrimakoffUpsCase(_CrossSection):
         return self is other
 
     def _sample_Q2(self, E_phi, random):
-        """Rejection-sample Q2 from dsigma/dQ2. The Z' propagator makes the
-        density fall with Q2, so envelope max sits at Q2min."""
+        """Rejection-sample Q2 from dsigma/dQ2.
+
+        NOTE: the differential |M|^2 has a LEADING Q^2 factor (Eq. C2), so
+        dsigma/dQ2 -> 0 at q2min and RISES with Q^2 before the Z' propagator
+        eventually turns it over. The envelope must therefore bound the true
+        maximum over the whole [q2min, q2max] range, not the value at q2min
+        (which is near the minimum). Anchoring at q2min under-bounds the
+        density, the rejection loop fails, and the old uniform fallback drew
+        unnormalized Q^2 -> a single event with a ~1e9x runaway weight.
+        """
         q2min, q2max = self._dp.Q2_range(E_phi)
         if q2min is None or q2max <= q2min:
             return None
-        f_max = self._dp.diff_xsec_Q2(E_phi, q2min) * 1.5
+        # Scan the range to find the true envelope maximum.
+        n_scan = 256
+        q2grid = q2min + (q2max - q2min) * (
+            (np.arange(n_scan) + 0.5) / n_scan)
+        fvals = np.array([self._dp.diff_xsec_Q2(E_phi, q) for q in q2grid])
+        fvals = np.where(np.isfinite(fvals) & (fvals > 0.0), fvals, 0.0)
+        f_max = fvals.max() * 1.3   # 1.3 safety margin above the scanned peak
         if f_max <= 0.0:
-            return random.Uniform(q2min, q2max)
+            return None
         for _ in range(10000):
             cand = random.Uniform(q2min, q2max)
-            if random.Uniform(0.0, f_max) <= self._dp.diff_xsec_Q2(E_phi, cand):
+            fc = self._dp.diff_xsec_Q2(E_phi, cand)
+            if not np.isfinite(fc) or fc <= 0.0:
+                continue
+            if random.Uniform(0.0, f_max) <= fc:
                 return cand
-        return random.Uniform(q2min, q2max)
+        # If we still fail after 10000 tries the envelope is mis-scaled;
+        # return the scanned-peak Q^2 rather than an unnormalized uniform draw,
+        # so no event escapes with a runaway weight.
+        return float(q2grid[int(np.argmax(fvals))])
 
     def SampleFinalState(self, record, random):
         E_phi = record.primary_momentum[0]
