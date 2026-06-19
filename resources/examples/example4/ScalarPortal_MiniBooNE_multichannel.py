@@ -1,5 +1,5 @@
 """
-Long-lived SCALAR (phi) Dark Primakoff chain at MiniBooNE  —  MULTICHANNEL sum.
+Long-lived SCALAR (phi) Dark Primakoff chain at MiniBooNE (mineral oil)  —  MULTICHANNEL sum.
 
 Model ii) of Dutta et al. (arXiv:2110.11944): Fig.1(a)-phi production +
 Fig.1(c) Dark Primakoff scattering. Reproduces the Fig.2 BOTTOM panels.
@@ -38,13 +38,11 @@ from siren.Injector import Injector
 from siren.Weighter import Weighter
 
 # ------------------------------------------------------------------ #
-#  Load physics modules (validated MesonProduction + VectorPortal)     #
+#  Load physics modules (MesonProduction + DarkPrimakoff + Dk2nuReader) #
 # ------------------------------------------------------------------ #
 _PROC_DIR = os.path.join(_util.resource_package_dir(), "processes", "DarkNewsTables")
 _MESON = _util.load_module("DuttaKim_MesonProduction",
                            os.path.join(_PROC_DIR, "MesonProduction.py"))
-_VP = _util.load_module("DuttaKim_VectorPortal",
-                        os.path.join(_PROC_DIR, "VectorPortal.py"))
 _DK = _util.load_module("DuttaKim_Dk2nuReader",
                         os.path.join(_PROC_DIR, "Dk2nuReader.py"))
 _DP = _util.load_module("DuttaKim_DarkPrimakoff",
@@ -70,35 +68,36 @@ M_ELEC = 0.000511
 GAMMA_PION_SM = 2.5281e-17   # PDG pi+ total width
 GAMMA_KAON_SM = 5.3167e-17   # PDG K+ total width (tau = 1.238e-8 s)
 
-# ---- Scalar model (Table I/II): m_phi=1 MeV, m_Z'=49 MeV ----
-M_PHI = 1e-3                 # GeV  scalar mediator
-M_ZP  = 49e-3               # GeV  Z' (Dark Primakoff mediator)
+# ---- Scalar model (Table I/II of arXiv:2110.11944): m_phi=1 MeV, m_Z'=49 MeV ----
+# Table I best-fit (scalar): (m_Z', m_phi) = (49, 1) MeV
+# Table II individual benchmark (scalar):
+#   g_mu = 5e-3,  g_n = 1e-2,  lambda = 4.4e-4 MeV^-1 = 0.44 GeV^-1
+# NOTE: the PSEUDOSCALAR benchmark uses (m_Z'=85 MeV, g_mu=1e-2, lambda=6.5 GeV^-1) —
+# all three differ from the scalar values above.
+M_PHI = 1e-3                 # GeV  scalar mediator (phi)
+M_ZP  = 49e-3                # GeV  Z' dark Primakoff mediator (scalar: 49 MeV)
 M_CARBON12 = 11.178          # GeV, C12 nuclear mass (MiniBooNE mineral oil)
 
 # Couplings (Table II scalar benchmark)
-G_MU_PROD = 5e-3            # phi-muon production coupling (g_mu)
-G_N       = 1e-2           # Z'-nucleon coupling (g_n)
-LAMBDA    = 0.44           # GeV^-1  (= 4.4e-4 MeV^-1; unit-converted!)
+G_MU_PROD = 5e-3             # phi-muon coupling (g_mu);  pseudoscalar had 1e-2
+G_N       = 1e-2             # Z'-nucleon coupling (g_n); same for both
+LAMBDA    = 0.44             # GeV^-1 (= 4.4e-4 MeV^-1); pseudoscalar had 6.5 GeV^-1
 
 PT = lambda pdg: dataclasses.Particle.ParticleType(pdg)
 PHI = PT(5919)             # scalar mediator (single secondary vertex)
 
-# MiniBooNE geometry
-R_FID = 5.0
-R_OIL = 5.746
-OIL_TARGET_PDGS = {1000060120, 1000010010}   # C12, H1
+# MiniBooNE geometry: spherical mineral-oil tank.  The signal is selected in the
+# fiducial sphere (R_FID); the phi Dark-Primakoff scatter is bounded to the full
+# oil sphere (R_OIL).  Carbon (C12) + hydrogen are the oil scattering targets.
+R_FID = 5.0          # fiducial sphere radius [m]
+R_OIL = 5.746        # full mineral-oil tank radius [m]
+OIL_TARGET_PDGS = {1000060120, 1000010010}    # C12, H1
 events_to_inject = 10_000
 
 # Reconstruction cuts (single-photon / single-shower selection)
 E_VIS_THRESHOLD = 0.140
 
-# ---- Absolute normalization ----
-# CALIB_VECTOR: the validated overall constant bridging the C-R production
-# width to Dutta-Kim Table II (imported from MesonProduction). Applied once
-# per event weight so the production rate is on the Table II scale.
-# (Loaded after _MESON import below.)
-#
-# MiniBooNE delivered POT (neutrino mode, Ref [3]): 6.46e20.
+# MiniBooNE BNB exposure (neutrino mode).
 MINIBOONE_POT = 6.46e20
 #
 # Energy-dependent detection efficiency eps(E_vis) from refs [76,77].
@@ -123,14 +122,6 @@ CHANNELS = {
     "pi_mu": (211, M_PION, M_MUON, -13, 14, GAMMA_PION_SM),
 }
 
-# Flux tag for build_phi_flux (keys on neutrino flavor of the production channel).
-CHANNEL_FLUX_TAG = {
-    "K_e":   "FHC_nue",
-    "K_mu":  "FHC_numu",
-    "pi_e":  "FHC_nue",
-    "pi_mu": "FHC_numu",
-}
-
 
 def _mc(channels, weights):
     m = injection.MultiChannelPhaseSpace()
@@ -139,20 +130,31 @@ def _mc(channels, weights):
     return m
 
 
-def meson_bias(E, px, py, pz, vx, vy, vz):
-    """Forward/energetic importance bias for the parent meson.
+def make_meson_bias(sigma_fn=None):
+    """Build the parent-meson importance shape used with flux_weighted_sampling.
 
-    NOTE: the vector script used E**2 * cos, tuned to the steeply-falling
-    chi spectrum. The scalar phi flux is flatter in energy, so E**2 OVER-biases
-    toward high-E forward production and leaves the populated moderate-E /
-    moderate-angle region undersampled -> a few events there carry runaway
-    importance weights (heavy weight tail). A gentler bias (E**1, softer cos
-    floor) matches the phi flux better and keeps the weights flat.
+    The realized sampling weight is  nimpwt * bias  -- i.e. sample PROPORTIONAL
+    TO PHYSICAL RATE, focused forward where the boosted phi can reach the oil tank.
+
+    bias = sigma(E_phi) * max(cos,0)   (candidate "C")
+      The Dark Primakoff scatter probability scales with sigma(E_phi), which
+      DECREASES with energy. Folding sigma in (proxying E_phi by the meson
+      energy E, with which it is tightly correlated) makes the sampling track
+      the true per-event weight: it down-weights high-E mesons (small sigma)
+      that the forward-only shape over-sampled, removing the residual K_mu tail
+      (ESF 0.7% -> O(30%)).  DO NOT reintroduce an E**n factor: sigma already
+      carries the correct (decreasing) energy dependence.
+
+    If sigma_fn is None, fall back to the parameter-free forward shape max(cos,0).
     """
-    p = np.sqrt(px**2 + py**2 + pz**2)
-    cos_theta = np.divide(pz, p, out=np.zeros_like(p), where=(p > 0))
-    r_trans = np.sqrt(vx**2 + vy**2)
-    return E**1.5 * np.maximum(cos_theta, 0.02) * np.exp(-r_trans / 200.0)
+    def bias(E, px, py, pz, vx, vy, vz):
+        p = np.sqrt(px**2 + py**2 + pz**2)
+        cos_theta = np.divide(pz, p, out=np.zeros_like(p), where=(p > 0))
+        fwd = np.maximum(cos_theta, 0.0)
+        if sigma_fn is None:
+            return fwd
+        return sigma_fn(np.asarray(E, dtype=float)) * fwd
+    return bias
 
 
 # ------------------------------------------------------------------ #
@@ -168,7 +170,7 @@ def build_onshell_models(parent_pdg, m_meson, m_lepton, lepton_pdg, nu_pdg):
     primakoff = _DP.DarkPrimakoffUpsCase(
         M_PHI, M_ZP, G_N, LAMBDA,
         nuclear_pdgid=1000060120, nuclear_mass=M_CARBON12,
-        A=12, Z=6, pdgid_phi=5919)                         # C12, phi->gamma
+        A=12, Z=6, pdgid_phi=5919)                        # C12, phi->gamma
     return {
         "meson_decay": meson_decay,
         "secondary_interactions": {
@@ -269,17 +271,6 @@ def build_onshell_phase_spaces(targets, models):
     }
 
 
-def build_primary_primakoff_phase_spaces(targets, models):
-    """Phi-as-primary architecture: the Dark Primakoff phi N -> gamma N is the
-    PRIMARY interaction (phi injected directly from build_phi_flux). The phi is
-    already aimed at the detector by FixedDirection + PointSource, so the scatter
-    phase space is just the physical cross-section channel (no DetectorDirected
-    channel -- that one is Decay2Body topology and clashes with Scatter2to2)."""
-    m = models["models"]
-    prim_sig = m["primakoff"].GetPossibleSignatures()[0]
-    return {prim_sig: _mc(
-        [injection.PhysicalCrossSectionChannel(m["primakoff"], prim_sig)], [1.0])}
-
 
 def onshell_stopping_condition(datum, i):
     sec = int(datum.record.signature.secondary_types[i])
@@ -289,11 +280,34 @@ def onshell_stopping_condition(datum, i):
     return True               # stop at photon / nucleus / everything else
 
 
-def load_dk2nu_mesons(dk2nu_data, parent_pdg, detector_model):
-    """PrimaryExternalDistribution of a given parent from already-read dk2nu."""
+def _build_sigma_interp(primakoff, e_lo=0.06, e_hi=8.0, n=120):
+    """Tabulate the Dark Primakoff total cross-section sigma(E) on a grid and
+    return a fast clipped-linear interpolator (used as the energy shape of the
+    meson sampling bias). Built once per channel."""
+    grid = np.linspace(e_lo, e_hi, n)
+    sg = np.array([primakoff._dp.total_xsec(float(e)) for e in grid])
+    # Normalize to O(1): the sampling bias is only defined up to an overall
+    # scale, but the raw sigma (~1e-32 cm^2) would push the sampling weights to
+    # ~1e-33 and risk precision loss in the sampler's internal normalization.
+    smax = float(np.max(sg))
+    if smax > 0:
+        sg = sg / smax
+    def sigma_fn(E):
+        return np.interp(np.clip(E, e_lo, e_hi), grid, sg)
+    return sigma_fn
+
+
+def load_dk2nu_mesons(dk2nu_data, parent_pdg, detector_model, primakoff=None):
+    """PrimaryExternalDistribution of a given parent from already-read dk2nu.
+
+    When `primakoff` is supplied, the meson sampling bias is sigma(E)*max(cos,0)
+    (candidate C) so the sampling tracks the true per-event weight (Dark
+    Primakoff sigma decreases with E). Otherwise the parameter-free forward
+    shape max(cos,0) is used."""
+    sigma_fn = _build_sigma_interp(primakoff) if primakoff is not None else None
     return _DK.dk2nu_to_primary_distribution(
         dk2nu_data, detector_model, parent_pdg=parent_pdg,
-        sampling_bias=meson_bias)
+        sampling_bias=make_meson_bias(sigma_fn), flux_weighted_sampling=True)
 
 
 # ------------------------------------------------------------------ #
@@ -304,8 +318,8 @@ from siren.math import Vector3D as _MV3
 def _fiducial(): return siren.geometry.Sphere(R_FID, 0.0)
 def _oil():      return siren.geometry.Sphere(R_OIL, 0.0)
 
-def primakoff_in_oil(event, oil_volume):
-    """Did a phi->gamma Primakoff scatter happen on C/H inside the oil?"""
+def primakoff_in_oil(event, oil_volume, debug=False):
+    """Did a phi->gamma Primakoff scatter happen on C/H inside the oil sphere?"""
     try:
         for datum in event.tree:
             r = datum.record
@@ -351,7 +365,7 @@ def signal_photon_observables(event, fid_volume):
 # ------------------------------------------------------------------ #
 #  Per-channel run                                                     #
 # ------------------------------------------------------------------ #
-def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
+def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject, debug=False):
     parent_pdg, m_meson, m_lepton, lepton_pdg, nu_pdg, gamma_sm = CHANNELS[name]
     print("\n" + "=" * 64)
     print("  CHANNEL %s : parent=%d  m_meson=%.4f  m_lepton=%.5f"
@@ -361,72 +375,74 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
     if (m_meson - m_lepton) <= M_PHI:
         print("  kinematically forbidden -> skip"); return np.array([]), np.array([]), np.array([])
 
-    fiducial_box = siren.geometry.Sphere(R_FID, 0.0)
+    # Injection geometry — two concentric spheres (MiniBooNE oil tank):
+    #   inject_sphere (R_OIL): bounds the phi Dark-Primakoff scatter vertex
+    #   fiducial      (R_FID): directed channel target — aims phi into the oil.
+    inject_sphere = siren.geometry.Sphere(R_OIL, 0.0)
+    fiducial_box  = siren.geometry.Sphere(R_FID, 0.0)
     targets = build_geometric_targets(detector_model, fiducial_box)
-    chain = build_onshell_models(parent_pdg, m_meson, m_lepton, lepton_pdg, nu_pdg)
+
+    chain       = build_onshell_models(parent_pdg, m_meson, m_lepton, lepton_pdg, nu_pdg)
     meson_decay = chain["meson_decay"]
-    primakoff = chain["models"]["primakoff"]
+    primakoff   = chain["models"]["primakoff"]
+    secondary_interactions = chain["secondary_interactions"]
 
-    # --- PHI-AS-PRIMARY ARCHITECTURE (mirrors the vector portal) -------------
-    # The K/pi -> l nu phi production is precomputed into a phi flux at the
-    # detector (build_phi_flux convolves the parent meson spectrum with the
-    # validated three-body differential rate and boosts to lab).  We then
-    # inject phi (5919) DIRECTLY with that flux and make the Dark Primakoff
-    # phi N -> gamma N the PRIMARY interaction.  This removes the live meson-
-    # decay vertex whose isotropic phys/gen mismatch produced the ~1e9 weight
-    # spike for forward phi -- exactly how the vector portal stays well-behaved.
+    # --- MESON-AS-PRIMARY ARCHITECTURE (mirrors the vector portal) -----------
+    # Primary  = meson (from dk2nu), Fixed mode (decay position from dk2nu).
+    # Primary interaction = meson -> l nu phi  (three-body scalar ME).
+    # Secondary = phi travels to TPC and undergoes Dark Primakoff phi N -> gamma N.
+    # This uses the actual dk2nu meson positions/momenta directly and avoids the
+    # phi-as-primary approximations (wrong origin, BNB flux tables, BR double-count).
     bsm_width = meson_decay._total_width
-    br_bsm = bsm_width / gamma_sm
-    print("  BSM 3-body width: %.4e GeV   SM 2-body width: %.4e   BR: %.4e"
-          % (bsm_width, gamma_sm, br_bsm))
+    br_bsm    = bsm_width / gamma_sm
+    print("  BSM 3-body width (calibrated): %.4e GeV   SM total width: %.4e   BR: %.4e"
+          % (bsm_width * CALIB_SCALAR, gamma_sm, bsm_width * CALIB_SCALAR / gamma_sm))
 
-    flux_tag = CHANNEL_FLUX_TAG[name]
-    print("  Building phi flux (build_phi_flux, tag=%s) ..." % flux_tag)
-    phi_flux = _MESON.build_phi_flux(
-        m_meson=m_meson, m_lepton=m_lepton, m_phi=M_PHI,
-        g_mu=G_MU_PROD, mediator_type="scalar",
-        flux_tag=flux_tag, min_energy=0.0, max_energy=3.0,
-        n_bins=50, physically_normalized=True)
+    meson_dist  = load_dk2nu_mesons(dk2nu_data, parent_pdg, detector_model,
+                                    primakoff=primakoff)
+    br_dist     = distributions.NormalizationConstant(br_bsm)
+    primary_injection_dists = [meson_dist]
+    primary_physical_dists  = [meson_dist, br_dist]
+    primary_mode = injection.VertexWeightingMode.Fixed()
 
-    # Primakoff as a PRIMARY process, detector-directed toward the targets.
-    primary_primakoff_ps = build_primary_primakoff_phase_spaces(targets, chain)
+    # phi propagates physically; bound its scatter vertex to the TPC sphere.
+    sv         = distributions.SecondaryPhysicalVertexDistribution()
+    sv_bounded = distributions.SecondaryBoundedVertexDistribution(inject_sphere)
+    sec_dists  = {PHI: [sv_bounded]}
 
-    # Injection distributions: mass + flux + direction + position.
-    # Physical distributions: same MINUS position, PLUS the BSM branching-ratio
-    # normalization that the precomputed flux does not itself carry.
-    from siren.math import Vector3D as _V3
-    _SRC = [0.0, 0.0, 0.0]
-    _MAXD = 50.0
-    primary_injection_distributions = [
-        distributions.PrimaryMass(M_PHI), phi_flux,
-        distributions.FixedDirection(_V3(0.0, 0.0, 1.0)),
-        distributions.PointSourcePositionDistribution(_SRC, _MAXD),
-    ]
-    br_dist = distributions.NormalizationConstant(br_bsm)
-    primary_physical_distributions = [
-        distributions.PrimaryMass(M_PHI), phi_flux,
-        distributions.FixedDirection(_V3(0.0, 0.0, 1.0)),
-        br_dist,
-    ]
+    # Phase spaces
+    primary_ps   = build_primary_phase_spaces(targets, meson_decay)
+    secondary_ps = build_onshell_phase_spaces(targets, chain)
 
+    print("  Injection: oil sphere R=%.3fm  fiducial sphere R=%.3fm" %
+          (R_OIL, R_FID))
     print("  Building injector (%d events) ..." % n_events)
     injector = Injector(
         number_of_events=n_events, detector_model=detector_model, seed=42,
-        primary_type=PHI, primary_interactions=[primakoff],
-        primary_injection_distributions=primary_injection_distributions,
-        primary_phase_spaces=primary_primakoff_ps,
+        primary_type=PT(parent_pdg), primary_interactions=[meson_decay],
+        primary_injection_distributions=primary_injection_dists,
+        primary_weighting_mode=primary_mode,
+        secondary_interactions=secondary_interactions,
+        secondary_injection_distributions=sec_dists,
+        secondary_phase_spaces=secondary_ps,
+        primary_phase_spaces=primary_ps,
+        stopping_condition=onshell_stopping_condition,
     )
-    # Force-init, tolerant of a pathological first event.
     try:
         for ev in injector:
             break
     except RuntimeError as e:
         print("  (force-init first event threw: %r — continuing)" % e)
+    try:
+        injector._Injector__injector.ResetInjectedEvents(n_events)
+    except Exception:
+        pass
 
     weighter = Weighter(
         injectors=[injector], detector_model=detector_model,
-        primary_type=PHI, primary_interactions=[primakoff],
-        primary_physical_distributions=primary_physical_distributions,
+        primary_type=PT(parent_pdg), primary_interactions=[meson_decay],
+        primary_physical_distributions=primary_physical_dists,
+        secondary_interactions=secondary_interactions,
     )
 
     print("  Generating events ...")
@@ -450,102 +466,11 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
         print("  (skipped %d kinematically pathological events)" % n_skipped)
     print("  Generated %d events" % len(events))
 
-    # Normalize the weighter by the ACTUAL number of events generated, so the
-    # rate is invariant to n_events (acceptance-limited generation otherwise
-    # makes sum(w) scale as 1/n_events). Use the raw generated count = events
-    # that came out of the injector (successful GenerateEvent calls).
-    n_generated = len(events)
-    try:
-        injector._Injector__injector.ResetInjectedEvents(max(n_generated, 1))
-    except Exception:
-        pass
-
     raw = np.array([weighter(ev) for ev in events])
+
     oil_volume = _oil(); fid_volume = _fiducial()
     n_oil = int(np.sum([primakoff_in_oil(ev, oil_volume) for ev in events]))
     print("  [diag] Primakoff gamma on C/H in oil: %d" % n_oil)
-
-    # ---- TEMP normalization diagnostic ----
-    _prim = chain["models"]["primakoff"]
-    print("  [diag] standalone sigma(0.5 GeV) = %.4e cm^2"
-          % _prim._dp.total_xsec(0.5))
-    _pos = raw[np.isfinite(raw) & (raw > 0)]
-    if len(_pos):
-        print("  [diag] raw weight: min=%.3e median=%.3e max=%.3e mean=%.3e"
-              % (_pos.min(), np.median(_pos), _pos.max(), _pos.mean()))
-        _med = np.median(_pos)
-        # Does a single event dominate the sum? (one-event-estimate test)
-        _sum = _pos.sum()
-        _topfrac = _pos.max() / _sum if _sum > 0 else float("nan")
-        print("  [diag] top event is %.1f%% of sum(raw>0)   (N_pos=%d)"
-              % (100.0 * _topfrac, len(_pos)))
-        # Identify and dump the kinematics of the single max-weight event.
-        # raw can contain non-finite/<=0 entries, so mask before argmax.
-        _safe = np.where(np.isfinite(raw) & (raw > 0), raw, -np.inf)
-        _imax = int(np.argmax(_safe))
-        _ev = events[_imax]
-        print("  [diag] MAX-weight event idx=%d  w=%.3e  (%.0fx median)"
-              % (_imax, raw[_imax], raw[_imax] / _med if _med > 0 else float("nan")))
-        # Pull the PRIMARY meson 4-momentum from the first datum's record,
-        # using the same record API the observable extractors use.
-        try:
-            _prec = _ev.tree[0].record
-            _pmom = _prec.primary_momentum   # [E, px, py, pz] in GeV
-            _E  = _pmom[0]
-            _px, _py, _pz = _pmom[1], _pmom[2], _pmom[3]
-            _pmag = math.sqrt(_px**2 + _py**2 + _pz**2)
-            _cth = (_pz / _pmag) if _pmag > 0 else 0.0
-            try:
-                _vtx = _prec.interaction_vertex
-                _rt = math.sqrt(_vtx[0]**2 + _vtx[1]**2)
-            except Exception:
-                _rt = float("nan")
-            _ptype = int(_prec.signature.primary_type)
-            print("  [diag]   primary pdg=%d  E=%.4f GeV  cos_theta=%.5f  "
-                  "r_trans=%.3f m  bias~%.3e"
-                  % (_ptype, _E, _cth, _rt,
-                     (_E**1.5 * max(_cth, 0.02) * math.exp(-_rt / 200.0))))
-        except Exception as _e:
-            print("  [diag]   (could not read primary kinematics: %r)" % _e)
-
-        # --- Decompose the max-weight event over its interaction tree. ---
-        # The runaway is suspected to be a Lorentz-boost / phase-space Jacobian
-        # on the ULTRALIGHT phi (M_PHI=1 MeV -> gamma_phi = E_phi/M_PHI can be
-        # ~1000s for a multi-GeV forward phi). Print each vertex's secondaries,
-        # their energies, and the phi boost factor so the blown-up vertex is
-        # obvious.
-        try:
-            print("  [diag]   --- tree decomposition of max-weight event ---")
-            for _di, _datum in enumerate(_ev.tree):
-                _r = _datum.record
-                _sig = _r.signature
-                _prim_t = int(_sig.primary_type)
-                _sec_t = [int(s) for s in _sig.secondary_types]
-                try:
-                    _pe = _r.primary_momentum[0]
-                except Exception:
-                    _pe = float("nan")
-                # gamma factor if the primary at this vertex is the phi (5919)
-                _gam = (_pe / M_PHI) if (_prim_t == 5919 and M_PHI > 0) else float("nan")
-                _se = []
-                try:
-                    for _i in range(len(_sec_t)):
-                        _se.append(_r.secondary_momenta[_i][0])
-                except Exception:
-                    pass
-                print("  [diag]     vtx%d  prim=%d (E=%.4f, gamma_phi=%.1f)  "
-                      "secs=%s  E_secs=%s"
-                      % (_di, _prim_t, _pe, _gam, _sec_t,
-                         ["%.4f" % e for e in _se]))
-                for _i, _e2 in enumerate(_se):
-                    if np.isfinite(_e2) and _e2 > 50.0:   # >50 GeV is unphysical here
-                        _stp = _sec_t[_i] if _i < len(_sec_t) else -1
-                        print("  [diag]       !! secondary %d E=%.3f GeV "
-                              "EXCEEDS sane range -> boost/Jacobian blow-up"
-                              % (_stp, _e2))
-        except Exception as _e:
-            print("  [diag]   (tree decomposition failed: %r)" % _e)
-    # ---- end diagnostic ----
 
     Ev, cs, wv = [], [], []
     for ev, w in zip(events, raw):
@@ -557,16 +482,24 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
         if obs is None:
             continue
         E_vis = obs[0]
-        # Absolute normalization: production CALIB x POT x efficiency.
-        # The g_mu^2 production coupling and g_n^2 lambda^2 Primakoff coupling
-        # are already inside the matrix elements; CALIB bridges the C-R
-        # production convention; POT scales the per-POT dk2nu flux.
-        w_abs = (w * CALIB_SCALAR * MINIBOONE_POT
-                 * detection_efficiency(E_vis))
+        # Absolute normalization: C-R calibration × delivered BNB POT × efficiency.
+        w_abs = w * CALIB_SCALAR * MINIBOONE_POT * detection_efficiency(E_vis)
         if not np.isfinite(w_abs) or w_abs <= 0:
             continue
         Ev.append(E_vis); cs.append(obs[1]); wv.append(w_abs)
     Ev, cs, wv = np.array(Ev), np.array(cs), np.array(wv)
+
+    if len(wv) > 0:
+        w_mean = wv.mean()
+        w_rel  = wv.std() / w_mean if w_mean > 0 else float("inf")
+        esf = (wv.sum()**2) / (len(wv) * np.sum(wv**2)) if np.sum(wv**2) > 0 else 0.0
+        order = np.argsort(wv)[::-1]
+        print("  [wstat] range %.3e - %.3e   mean %.3e   stddev/mean %.2f   ESF %.1f%%"
+              % (wv.min(), wv.max(), w_mean, w_rel, 100.0 * esf))
+        topw = wv[order[:5]]
+        print("  [wstat] top-5 weights: %s  (=%.1f%% of sum)"
+              % (np.array2string(topw, precision=2),
+                 100.0 * topw.sum() / wv.sum()))
     print("  [result] plottable signal: %d   sum(w_abs)=%.3e events"
           % (len(Ev), wv.sum() if len(wv) else 0.0))
     return Ev, cs, wv
@@ -576,6 +509,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--channel", choices=list(CHANNELS) + ["all"], default="all")
     ap.add_argument("--n-events", type=int, default=events_to_inject)
+    ap.add_argument("--debug", action="store_true",
+                    help="(reserved) per-vertex diagnostics")
     args = ap.parse_args()
 
     print("Loading MiniBooNE detector ...")
@@ -591,7 +526,8 @@ def main():
     names = list(CHANNELS) if args.channel == "all" else [args.channel]
     per_channel = {}
     for name in names:
-        per_channel[name] = run_channel(name, dk2nu_data, detector_model, args.n_events)
+        per_channel[name] = run_channel(name, dk2nu_data, detector_model,
+                                        args.n_events, debug=args.debug)
 
     E_all = np.concatenate([per_channel[n][0] for n in per_channel]) \
             if any(len(per_channel[n][0]) for n in per_channel) else np.array([])
@@ -618,26 +554,57 @@ def main():
 
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    E_bins = np.linspace(0.140, 2.4, 40); c_bins = np.linspace(-1, 1, 40)
-    colors = {"K_e": "C0", "K_mu": "C1", "pi_e": "C2", "pi_mu": "C3"}
-    fig, ax = plt.subplots(1, 2, figsize=(13, 5))
+
+    # Bins matching Dutta-Kim Fig. 2 style
+    E_bins  = np.linspace(0.0, 2.0, 41)    # 40 × 50 MeV bins, 0-2000 MeV
+    c_bins  = np.linspace(-1.0, 1.0, 61)   # 60 bins, full cos theta range
+    cz_bins = np.linspace(0.80, 1.0, 41)   # 40 bins, forward zoom
+    colors  = {"K_e": "C0", "K_mu": "C1", "pi_e": "C2", "pi_mu": "C3"}
+    pot_note = r"(%.0e POT, MiniBooNE BNB)" % MINIBOONE_POT
+
+    fig, ax = plt.subplots(1, 3, figsize=(18, 5))
     for n in per_channel:
         Ev, cs, wv = per_channel[n]
         if len(Ev):
             ax[0].hist(Ev*1e3, bins=E_bins*1e3, weights=wv, histtype="step",
                        color=colors.get(n), label=n)
-            ax[1].hist(cs, bins=c_bins, weights=wv, histtype="step",
+            ax[1].hist(cs, bins=c_bins,  weights=wv, histtype="step",
+                       color=colors.get(n), label=n)
+            ax[2].hist(cs, bins=cz_bins, weights=wv, histtype="step",
                        color=colors.get(n), label=n)
     if E_all.size:
         ax[0].hist(E_all*1e3, bins=E_bins*1e3, weights=w_all, histtype="step",
                    color="k", lw=2, label="TOTAL")
-        ax[1].hist(c_all, bins=c_bins, weights=w_all, histtype="step",
+        ax[1].hist(c_all, bins=c_bins,  weights=w_all, histtype="step",
                    color="k", lw=2, label="TOTAL")
-    ax[0].set_xlabel("E_gamma [MeV]"); ax[0].set_ylabel("Events / %g POT" % MINIBOONE_POT)
-    ax[0].set_title("MiniBooNE Scalar Primakoff : photon energy"); ax[0].legend(fontsize=8)
-    ax[1].set_xlabel("cos(theta) wrt beam"); ax[1].set_ylabel("Events / %g POT" % MINIBOONE_POT)
-    ax[1].set_title("MiniBooNE Scalar Primakoff : photon angular"); ax[1].legend(fontsize=8)
-    plt.tight_layout(); plt.savefig(stem + "_countrate.png", dpi=130)
+        ax[2].hist(c_all, bins=cz_bins, weights=w_all, histtype="step",
+                   color="k", lw=2, label="TOTAL")
+
+    ax[0].set_xlabel(r"$E_\mathrm{vis}$ [MeV]", fontsize=12)
+    ax[0].set_ylabel("Counts", fontsize=12)
+    ax[0].set_xlim(0, 2000); ax[0].set_ylim(bottom=0)
+    ax[0].axvline(E_VIS_THRESHOLD * 1e3, color="gray", ls="--", lw=0.8,
+                  label="140 MeV threshold")
+    ax[0].set_title(r"MiniBooNE scalar Dark Primakoff: $E_\gamma$ " + pot_note,
+                    fontsize=10)
+    ax[0].legend(fontsize=8)
+
+    ax[1].set_xlabel(r"$\cos\theta$", fontsize=12)
+    ax[1].set_ylabel("Counts", fontsize=12)
+    ax[1].set_xlim(-1, 1); ax[1].set_ylim(bottom=0)
+    ax[1].set_title(r"MiniBooNE scalar Dark Primakoff: $\cos\theta$ wrt beam " + pot_note,
+                    fontsize=10)
+    ax[1].legend(fontsize=8)
+
+    ax[2].set_xlabel(r"$\cos\theta$", fontsize=12)
+    ax[2].set_ylabel("Counts", fontsize=12)
+    ax[2].set_xlim(0.80, 1.0); ax[2].set_ylim(bottom=0)
+    ax[2].set_title(r"MiniBooNE scalar Dark Primakoff: $\cos\theta$ zoom $[0.80,1.0]$ " + pot_note,
+                    fontsize=10)
+    ax[2].legend(fontsize=8)
+
+    plt.tight_layout()
+    plt.savefig(stem + "_countrate.png", dpi=130)
     print("  Saved -> %s_countrate.png" % stem)
     print("  Done.")
 

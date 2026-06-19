@@ -63,7 +63,12 @@ M_V1 = 17e-3
 M_V2 = 200e-3
 M_ARGON40 = 37.224           # GeV, Ar40 nuclear mass (ICARUS liquid argon)
 
-G_D = 1.0
+# Dutta-Kim Table II benchmark (double-mediator scenario, arXiv:2110.11944):
+#   epsilon_1 = 7e-5   (V1 kinetic mixing: production + visible decay)
+#   epsilon_2 = 1e-4   (V2 kinetic mixing: upscattering)
+#   g'_2^2/(4pi) = 0.5 (dark gauge coupling of V2 to chi-chi')
+#   -> G_D = sqrt(4*pi*0.5) = sqrt(2*pi)
+G_D = math.sqrt(2.0 * math.pi)   # g'_2^2/(4pi) = 0.5
 EPSILON_1 = 7e-5
 EPSILON_2 = 1e-4
 G_MU = EPSILON_1             # production coupling slot = kinetic mixing (vector)
@@ -75,9 +80,19 @@ CHI_PRIME = PT(5918)
 V1_SIGNAL = PT(5923)
 
 # ICARUS LAr geometry (active-volume cut via GDML volTPCActive sectors)
-R_FID = 5.0          # (legacy, unused for ICARUS sector cut)
-R_OIL = 5.746        # (legacy, unused for ICARUS sector cut)
-R_LAR_INJECT = 12.0  # fallback injector fiducial radius [m] if ParseFiducialVolume fails
+# Injection geometry: sphere/box enclosing all 8 volTPCActive sectors.
+# In detector coordinates (z-offset of 600 m subtracted from GDML world):
+#   TPC x-extent: [-4.32, +4.32] m   y: [-3.40, +2.94] m   z: [-13.42, +13.42] m
+#   Farthest corner from origin: 14.51 m  -> R_LAR_INJECT must be > 14.51 m.
+# The old value of 12.0 m was too small (missed TPC z-corners), causing the
+# chi bounded vertex distribution to sample only ~83% of the active z-range.
+R_LAR_INJECT = 15.0  # encloses all 8 TPC corners (max corner R = 14.51 m)
+# Tight bounding box dimensions that exactly enclose all 8 TPC sectors:
+#   X_BOX = 2*(2.84+1.48) = 8.64 m,  Y_BOX = 6.34 m,  Z_BOX = 2*(4.47+8.95) = 26.84 m
+# This box volume (1469 m^3) is 55% of the sphere (7238 m^3), giving better efficiency.
+_TPC_BOX_X = 8.64    # full width [m], covers ±4.32 m in x
+_TPC_BOX_Y = 6.34    # full height [m]
+_TPC_BOX_Z = 26.84   # full length [m], covers ±13.42 m in z
 LAR_TARGET_PDGS = {1000180400}               # Ar40 (upscatter target in LAr)
 events_to_inject = 10_000
 
@@ -91,10 +106,8 @@ E_PAIR_MAX_DEG = 10.0
 # per event weight so the production rate is on the Table II scale.
 # (Loaded after _MESON import below.)
 #
-# ICARUS delivered POT (SBN nominal benchmark, matching the earlier ICARUS
-# full-chain work). NOTE: this is the ICARUS exposure, NOT the MiniBooNE
-# 6.46e20 neutrino-mode number — those are different experiments in the BNB.
-MINIBOONE_POT = 6e20
+# ICARUS NuMI exposure (SBN programme nominal, neutrino mode).
+ICARUS_POT = 6e20
 #
 # Energy-dependent detection efficiency eps(E_vis) from refs [76,77].
 # Digitize and fill as [[E_GeV, eff], ...]; None -> efficiency 1.0 (a flat
@@ -126,12 +139,31 @@ def _mc(channels, weights):
     return m
 
 
-def meson_bias(E, px, py, pz, vx, vy, vz):
-    """Forward/energetic bias (same form as the SBND default_pion_bias)."""
-    p = np.sqrt(px**2 + py**2 + pz**2)
-    cos_theta = np.divide(pz, p, out=np.zeros_like(p), where=(p > 0))
-    r_trans = np.sqrt(vx**2 + vy**2)
-    return E**2 * np.maximum(cos_theta, 0.01) * np.exp(-r_trans / 200.0)
+def make_meson_bias(sigma_fn=None):
+    """Build the parent-meson importance shape used with flux_weighted_sampling.
+
+    The realized sampling weight is  nimpwt * bias  -- i.e. sample PROPORTIONAL
+    TO PHYSICAL RATE, focused forward where the boosted V1/chi can reach ICARUS.
+
+    bias = sigma(E) * max(cos,0)   (candidate "C")
+      sigma is the chi-upscatter total cross-section sigma(E_chi); the meson
+      energy E proxies E_chi (looser than the scalar case because of the
+      V1->chi chi split, but it still tracks the trend). Folding it in makes
+      the sampling track the true per-event weight.  DO NOT reintroduce an E**n
+      factor: dividing the flux weight by E**n (the old E**2*cos bias)
+      manufactures a heavy weight tail; sigma already carries the correct
+      energy dependence.
+
+    If sigma_fn is None, fall back to the parameter-free forward shape max(cos,0).
+    """
+    def bias(E, px, py, pz, vx, vy, vz):
+        p = np.sqrt(px**2 + py**2 + pz**2)
+        cos_theta = np.divide(pz, p, out=np.zeros_like(p), where=(p > 0))
+        fwd = np.maximum(cos_theta, 0.0)
+        if sigma_fn is None:
+            return fwd
+        return sigma_fn(np.asarray(E, dtype=float)) * fwd
+    return bias
 
 
 # ------------------------------------------------------------------ #
@@ -278,11 +310,31 @@ def onshell_stopping_condition(datum, i):
     return True
 
 
-def load_dk2nu_mesons(dk2nu_data, parent_pdg, detector_model):
-    """PrimaryExternalDistribution of a given parent from already-read dk2nu."""
+def _build_sigma_interp(upscatter, e_lo=0.06, e_hi=8.0, n=120):
+    """Tabulate the chi-upscatter total cross-section sigma(E) on a grid and
+    return a fast clipped-linear interpolator (the energy shape of the meson
+    sampling bias). Built once per channel; normalized to O(1) so the tiny raw
+    sigma cannot push the sampling weights into precision loss."""
+    grid = np.linspace(e_lo, e_hi, n)
+    sg = np.array([upscatter._ups.total_xsec(float(e)) for e in grid])
+    smax = float(np.max(sg))
+    if smax > 0:
+        sg = sg / smax
+    def sigma_fn(E):
+        return np.interp(np.clip(E, e_lo, e_hi), grid, sg)
+    return sigma_fn
+
+
+def load_dk2nu_mesons(dk2nu_data, parent_pdg, detector_model, upscatter=None):
+    """PrimaryExternalDistribution of a given parent from already-read dk2nu.
+
+    When `upscatter` is supplied, the meson sampling bias is sigma(E)*max(cos,0)
+    (candidate C) so the sampling tracks the true per-event weight. Otherwise the
+    parameter-free forward shape max(cos,0) is used."""
+    sigma_fn = _build_sigma_interp(upscatter) if upscatter is not None else None
     return _DK.dk2nu_to_primary_distribution(
         dk2nu_data, detector_model, parent_pdg=parent_pdg,
-        sampling_bias=meson_bias)
+        sampling_bias=make_meson_bias(sigma_fn), flux_weighted_sampling=True)
 
 
 # ------------------------------------------------------------------ #
@@ -398,7 +450,7 @@ def signal_eepair_observables(event, detector_model):
 # ------------------------------------------------------------------ #
 #  Per-channel run                                                     #
 # ------------------------------------------------------------------ #
-def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
+def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject, debug=False):
     parent_pdg, m_meson, m_lepton, lepton_pdg, nu_pdg, gamma_sm = CHANNELS[name]
     print("\n" + "=" * 64)
     print("  CHANNEL %s : parent=%d  m_meson=%.4f  m_lepton=%.5f"
@@ -408,14 +460,30 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
     if (m_meson - m_lepton) <= M_V1:
         print("  kinematically forbidden -> skip"); return np.array([]), np.array([]), np.array([])
 
-    # Proposal/importance-sampling volume for the meson-decay direction and the
-    # chi upscatter-vertex bound. This is NOT a physical cut (that is the
-    # volTPCActive sector check applied to the observables below); it only needs
-    # to ENCLOSE the ICARUS active region. The MiniBooNE R_FID=5 sphere at the
-    # origin does not -- the ICARUS LAr sits offset at z~10-20 m -- so use the
-    # larger R_LAR_INJECT sphere that covers it.
-    fiducial_box = siren.geometry.Sphere(R_LAR_INJECT, 0.0)
-    targets = build_geometric_targets(detector_model, fiducial_box)
+    # Injection / importance-sampling geometry.
+    # Two complementary volumes are used:
+    #
+    #   inject_sphere  — a sphere of R=R_LAR_INJECT enclosing all TPC corners.
+    #                    Used as the SecondaryBoundedVertexDistribution for chi
+    #                    (bounding box for the upscatter vertex sampler).
+    #
+    #   inject_box     — a tight axis-aligned Box that matches the actual ICARUS
+    #                    TPC active volume envelope (_TPC_BOX_X × Y × Z).
+    #                    Used as the DetectorDirected target for V1 and chi, so
+    #                    that the direction biasing points precisely into LAr
+    #                    instead of into the larger sphere dead-zones.
+    #                    Volume ≈ 1469 m³ vs sphere ≈ 7238 m³ → ~5x better
+    #                    directional efficiency.
+    #
+    # Neither is a physical cut; the real signal selection is the volTPCActive
+    # GDML sector check applied below in upscatter_in_lar / signal_eepair_observables.
+    inject_sphere = siren.geometry.Sphere(R_LAR_INJECT, 0.0)
+    inject_box    = siren.geometry.Box(_TPC_BOX_X, _TPC_BOX_Y, _TPC_BOX_Z)
+
+    # The directed channels use the tight TPC bounding box; the bounded vertex
+    # distribution uses the sphere (Box.IsInside is stricter and would reject
+    # valid corners when the chi path is slightly off-axis).
+    targets = build_geometric_targets(detector_model, inject_box)
     chain = build_onshell_models(parent_pdg, m_meson, m_lepton, lepton_pdg, nu_pdg)
     meson_decay = chain["meson_decay"]
     secondary_interactions = chain["secondary_interactions"]
@@ -424,28 +492,26 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
 
     bsm_width = meson_decay._total_width
     br_bsm = bsm_width / gamma_sm
-    print("  BSM 3-body width: %.4e GeV   SM 2-body width: %.4e   BR: %.4e"
-          % (bsm_width, gamma_sm, br_bsm))
+    print("  BSM 3-body width (calibrated): %.4e GeV   SM total width: %.4e   BR: %.4e"
+          % (bsm_width * CALIB_VECTOR, gamma_sm, bsm_width * CALIB_VECTOR / gamma_sm))
 
-    meson_dist = load_dk2nu_mesons(dk2nu_data, parent_pdg, detector_model)
+    meson_dist = load_dk2nu_mesons(dk2nu_data, parent_pdg, detector_model,
+                                   upscatter=chain["models"]["upscatter"])
     primary_dists = [meson_dist]
     br_dist = distributions.NormalizationConstant(br_bsm)
-    # Missing branching-ratio factors from Eq. 4: dN_S ~ 2*BR(V1->2chi)*BR(V1->2e).
-    # These cancel inside each decay's FinalStateProbability (= width/width), so
-    # they must be restored explicitly (validated ICARUS kaon_eplus convention).
-    # Paper assumes both BRs = 0.5 -> 2*0.5*0.5 = 0.5.
-    BR_V1_CHICHI = 0.5
-    BR_V1_EE     = 0.5
-    v1_br_factor = 2.0 * BR_V1_CHICHI * BR_V1_EE
-    v1_br_dist = distributions.NormalizationConstant(v1_br_factor)
-    physical_dists = [meson_dist, br_dist, v1_br_dist]
+    physical_dists = [meson_dist, br_dist]
     primary_mode = injection.VertexWeightingMode.Fixed()
 
     sv = distributions.SecondaryPhysicalVertexDistribution()
-    sv_bounded = distributions.SecondaryBoundedVertexDistribution(fiducial_box)
+    # Use the sphere (R=15m) for the chi vertex bound: the sphere is more
+    # forgiving for the sampler (avoids edge effects from the box's sharp
+    # corners), while still correctly enclosing all 8 TPC sectors.
+    sv_bounded = distributions.SecondaryBoundedVertexDistribution(inject_sphere)
     sec_dists = {pt: [sv] for pt in secondary_interactions}
     sec_dists[CHI] = [sv_bounded]
 
+    print("  Injection sphere R=%.1fm  box=%.2fx%.2fx%.2fm" %
+          (R_LAR_INJECT, _TPC_BOX_X, _TPC_BOX_Y, _TPC_BOX_Z))
     print("  Building injector (%d events) ..." % n_events)
     injector = Injector(
         number_of_events=n_events, detector_model=detector_model, seed=42,
@@ -500,12 +566,11 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
     print("  Generated %d events" % len(events))
 
     raw = np.array([weighter(ev) for ev in events])
-    # Debug: dump where the upscatter vertex lands for the first few events
-    # (confirms volTPCActive sector resolution, as in the Primakoff scripts).
-    globals()["_DEBUG_LAR"] = True
-    for _ev in events[:5]:
-        upscatter_in_lar(_ev, detector_model, debug=True)
-    globals()["_DEBUG_LAR"] = False
+    if debug:
+        globals()["_DEBUG_LAR"] = True
+        for _ev in events[:5]:
+            upscatter_in_lar(_ev, detector_model, debug=True)
+        globals()["_DEBUG_LAR"] = False
     n_lar = int(np.sum([upscatter_in_lar(ev, detector_model) for ev in events]))
     print("  [diag] upscatter on Ar in LAr active: %d" % n_lar)
 
@@ -519,26 +584,11 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
         if obs is None:
             continue
         E_vis = obs[0]
-        # ---- Absolute normalization (EMPIRICAL ANCHOR to validated ICARUS) ----
-        # This script's dk2nu_to_primary_distribution yields correct spectral
-        # SHAPES but its density normalization convention differs from the
-        # validated VectorPortal_ICARUS_kaon_eplus.py (PrimaryExternalDistribution
-        # + CSV) path. Rather than assume the convention, we anchor the absolute
-        # scale to the validated K_e benchmark at this exact parameter point:
-        #
-        #     validated K_e signal      = 0.138 events   (6e20 POT, gD=1.0)
-        #     this script K_e raw sum   = 2.685e-22 events (POT_SCALE=1.0)
-        #     => NORM_ANCHOR = 0.138 / 2.685e-22 = 5.140e20
-        #
-        # Note this is 86% of bare ICARUS POT (6e20); the ~14% offset is the
-        # cut-acceptance / bias-correction difference between the two sampling
-        # schemes, which is why we anchor empirically rather than multiply by POT.
-        # Assumes the dk2nu normalization convention is channel-independent
-        # (true if all parents use the same dk2nu_to_primary_distribution).
-        # TODO: derive from source (DuttaKim_Dk2nuReader) for a first-principles
-        # normalization; until then this is anchored to the validated reference.
-        NORM_ANCHOR = 5.140e20
-        w_abs = w * NORM_ANCHOR * detection_efficiency(E_vis)
+        # Absolute normalization: calibrated C-R constant × delivered POT × efficiency.
+        # Factor 2: V1_PROD -> chi + chi pair; either chi can upscatter
+        # (Dutta-Kim Eq. 4 prefactor). Only chi[0] propagates via stopping condition.
+        w_abs = (w * 2.0 * CALIB_VECTOR * ICARUS_POT
+                 * detection_efficiency(E_vis))
         if not np.isfinite(w_abs) or w_abs <= 0:
             continue
         Ev.append(E_vis); cs.append(obs[1]); wv.append(w_abs)
@@ -565,6 +615,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--channel", choices=list(CHANNELS) + ["all"], default="all")
     ap.add_argument("--n-events", type=int, default=events_to_inject)
+    ap.add_argument("--debug", action="store_true",
+                    help="Print per-vertex LAr sector diagnostics for first 5 events per channel")
     args = ap.parse_args()
 
     print("Loading ICARUS detector (GDML) ...")
@@ -580,7 +632,8 @@ def main():
     names = list(CHANNELS) if args.channel == "all" else [args.channel]
     per_channel = {}
     for name in names:
-        per_channel[name] = run_channel(name, dk2nu_data, detector_model, args.n_events)
+        per_channel[name] = run_channel(name, dk2nu_data, detector_model, args.n_events,
+                                        debug=args.debug)
 
     E_all = np.concatenate([per_channel[n][0] for n in per_channel]) \
             if any(len(per_channel[n][0]) for n in per_channel) else np.array([])
@@ -607,9 +660,18 @@ def main():
 
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    E_bins = np.linspace(0.140, 2.4, 40); c_bins = np.linspace(-1, 1, 40)
-    colors = {"K_e": "C0", "K_mu": "C1", "pi_e": "C2", "pi_mu": "C3"}
-    fig, ax = plt.subplots(1, 2, figsize=(13, 5))
+
+    # Bin definitions matching Dutta-Kim Fig. 2 style:
+    #   Energy:   0-2000 MeV, 50 MeV bins (Fig. 2 x-axis)
+    #   cos theta: -1 to 1, 60 bins (full range, as in Fig. 2)
+    #   cos theta (zoom): 0.8-1.0, 40 bins  (ICARUS/NuMI forward-peak detail)
+    E_bins  = np.linspace(0.0, 2.0, 41)          # 40 bins × 50 MeV
+    c_bins  = np.linspace(-1.0, 1.0, 61)          # 60 bins × 0.033
+    cz_bins = np.linspace(0.80, 1.0, 41)          # 40 bins × 0.005 (zoom)
+    colors  = {"K_e": "C0", "K_mu": "C1", "pi_e": "C2", "pi_mu": "C3"}
+
+    fig, ax = plt.subplots(1, 3, figsize=(18, 5))
+
     for n in per_channel:
         Ev, cs, wv = per_channel[n]
         if len(Ev):
@@ -617,16 +679,52 @@ def main():
                        color=colors.get(n), label=n)
             ax[1].hist(cs, bins=c_bins, weights=wv, histtype="step",
                        color=colors.get(n), label=n)
+            ax[2].hist(cs, bins=cz_bins, weights=wv, histtype="step",
+                       color=colors.get(n), label=n)
+
     if E_all.size:
         ax[0].hist(E_all*1e3, bins=E_bins*1e3, weights=w_all, histtype="step",
                    color="k", lw=2, label="TOTAL")
         ax[1].hist(c_all, bins=c_bins, weights=w_all, histtype="step",
                    color="k", lw=2, label="TOTAL")
-    ax[0].set_xlabel("E_vis (e+e-) [MeV]"); ax[0].set_ylabel("Expected signal events (ICARUS 6e20 POT, anchored)")
-    ax[0].set_title("ICARUS Vector Portal : visible energy (e+e-)"); ax[0].legend(fontsize=8)
-    ax[1].set_xlabel("cos(theta) wrt beam"); ax[1].set_ylabel("Expected signal events (ICARUS 6e20 POT, anchored)")
-    ax[1].set_title("ICARUS Vector Portal : angular (e+e-)"); ax[1].legend(fontsize=8)
-    plt.tight_layout(); plt.savefig(stem + "_countrate.png", dpi=130)
+        ax[2].hist(c_all, bins=cz_bins, weights=w_all, histtype="step",
+                   color="k", lw=2, label="TOTAL")
+
+    # --- Axis labels matching Dutta-Kim Fig. 2 exactly ---
+    # "Counts" matches the Dutta-Kim Fig.2 y-axis label exactly.
+    # The POT exposure (6e20) is already folded into w_abs; the histogram
+    # bins show the total expected signal events for the full ICARUS exposure.
+    y_label = "Counts"
+    pot_note = r"(%.0e POT, ICARUS NuMI)" % ICARUS_POT
+
+    ax[0].set_xlabel(r"$E_\mathrm{vis}$ [MeV]", fontsize=12)
+    ax[0].set_ylabel(y_label, fontsize=12)
+    ax[0].set_xlim(0, 2000)
+    ax[0].set_ylim(bottom=0)
+    ax[0].axvline(E_VIS_THRESHOLD * 1e3, color="gray", ls="--", lw=0.8,
+                  label="140 MeV threshold")
+    ax[0].set_title(r"ICARUS $\chi$ upscattering: $E_\mathrm{vis}\ (e^+e^-)$ " + pot_note,
+                    fontsize=10)
+    ax[0].legend(fontsize=8)
+
+    ax[1].set_xlabel(r"$\cos\theta$", fontsize=12)
+    ax[1].set_ylabel(y_label, fontsize=12)
+    ax[1].set_xlim(-1, 1)
+    ax[1].set_ylim(bottom=0)
+    ax[1].set_title(r"ICARUS $\chi$ upscattering: $\cos\theta$ wrt beam " + pot_note,
+                    fontsize=10)
+    ax[1].legend(fontsize=8)
+
+    ax[2].set_xlabel(r"$\cos\theta$", fontsize=12)
+    ax[2].set_ylabel(y_label, fontsize=12)
+    ax[2].set_xlim(0.80, 1.0)
+    ax[2].set_ylim(bottom=0)
+    ax[2].set_title(r"ICARUS $\chi$ upscattering: $\cos\theta$ zoomed $[0.80,1.0]$ " + pot_note,
+                    fontsize=10)
+    ax[2].legend(fontsize=8)
+
+    plt.tight_layout()
+    plt.savefig(stem + "_countrate.png", dpi=130)
     print("  Saved -> %s_countrate.png" % stem)
     print("  Done.")
 

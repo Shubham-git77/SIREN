@@ -63,7 +63,16 @@ M_V1 = 17e-3
 M_V2 = 200e-3
 M_CARBON12 = 11.178          # GeV, C12 nuclear mass (MiniBooNE mineral oil)
 
-G_D = 1.0
+# Dutta-Kim Table II benchmark (double-mediator scenario, arXiv:2110.11944):
+#   epsilon_1 = 7e-5   (V1 kinetic mixing: production + visible decay)
+#   epsilon_2 = 1e-4   (V2 kinetic mixing: upscattering)
+#   g'_2^2/(4pi) = 0.5 (dark gauge coupling of V2 to chi-chi')
+#   -> G_D = sqrt(4*pi*0.5) = sqrt(2*pi)
+# These satisfy all exotic meson decay limits (Table II).
+# The best-fit product epsilon_1 * epsilon_2 * g'_2^2/(4pi) = 1.3e-7 (Table I)
+# is reproduced if instead epsilon_2 is scaled up to ~3.7e-3; Table II uses
+# smaller couplings that are safely within existing bounds.
+G_D = math.sqrt(2.0 * math.pi)   # g'_2 = sqrt(4*pi*0.5), so g'_2^2/(4pi) = 0.5
 EPSILON_1 = 7e-5
 EPSILON_2 = 1e-4
 G_MU = EPSILON_1             # production coupling slot = kinetic mixing (vector)
@@ -123,12 +132,31 @@ def _mc(channels, weights):
     return m
 
 
-def meson_bias(E, px, py, pz, vx, vy, vz):
-    """Forward/energetic bias (same form as the SBND default_pion_bias)."""
-    p = np.sqrt(px**2 + py**2 + pz**2)
-    cos_theta = np.divide(pz, p, out=np.zeros_like(p), where=(p > 0))
-    r_trans = np.sqrt(vx**2 + vy**2)
-    return E**2 * np.maximum(cos_theta, 0.01) * np.exp(-r_trans / 200.0)
+def make_meson_bias(sigma_fn=None):
+    """Build the parent-meson importance shape used with flux_weighted_sampling.
+
+    The realized sampling weight is  nimpwt * bias  -- i.e. sample PROPORTIONAL
+    TO PHYSICAL RATE, focused forward where the boosted V1/chi can reach the
+    detector.
+
+    bias = sigma(E) * max(cos,0)   (candidate "C")
+      sigma is the chi-upscatter total cross-section sigma(E_chi); the meson
+      energy E proxies E_chi (looser than the scalar case because of the
+      V1->chi chi split, but it still tracks the trend).  DO NOT reintroduce an
+      E**n factor: dividing the flux weight by E**n (the old E**2*cos bias)
+      manufactures a heavy weight tail; sigma already carries the correct
+      energy dependence.
+
+    If sigma_fn is None, fall back to the parameter-free forward shape max(cos,0).
+    """
+    def bias(E, px, py, pz, vx, vy, vz):
+        p = np.sqrt(px**2 + py**2 + pz**2)
+        cos_theta = np.divide(pz, p, out=np.zeros_like(p), where=(p > 0))
+        fwd = np.maximum(cos_theta, 0.0)
+        if sigma_fn is None:
+            return fwd
+        return sigma_fn(np.asarray(E, dtype=float)) * fwd
+    return bias
 
 
 # ------------------------------------------------------------------ #
@@ -275,11 +303,31 @@ def onshell_stopping_condition(datum, i):
     return True
 
 
-def load_dk2nu_mesons(dk2nu_data, parent_pdg, detector_model):
-    """PrimaryExternalDistribution of a given parent from already-read dk2nu."""
+def _build_sigma_interp(upscatter, e_lo=0.06, e_hi=8.0, n=120):
+    """Tabulate the chi-upscatter total cross-section sigma(E) on a grid and
+    return a fast clipped-linear interpolator (the energy shape of the meson
+    sampling bias). Built once per channel; normalized to O(1) so the tiny raw
+    sigma cannot push the sampling weights into precision loss."""
+    grid = np.linspace(e_lo, e_hi, n)
+    sg = np.array([upscatter._ups.total_xsec(float(e)) for e in grid])
+    smax = float(np.max(sg))
+    if smax > 0:
+        sg = sg / smax
+    def sigma_fn(E):
+        return np.interp(np.clip(E, e_lo, e_hi), grid, sg)
+    return sigma_fn
+
+
+def load_dk2nu_mesons(dk2nu_data, parent_pdg, detector_model, upscatter=None):
+    """PrimaryExternalDistribution of a given parent from already-read dk2nu.
+
+    When `upscatter` is supplied, the meson sampling bias is sigma(E)*max(cos,0)
+    (candidate C) so the sampling tracks the true per-event weight. Otherwise the
+    parameter-free forward shape max(cos,0) is used."""
+    sigma_fn = _build_sigma_interp(upscatter) if upscatter is not None else None
     return _DK.dk2nu_to_primary_distribution(
         dk2nu_data, detector_model, parent_pdg=parent_pdg,
-        sampling_bias=meson_bias)
+        sampling_bias=make_meson_bias(sigma_fn), flux_weighted_sampling=True)
 
 
 # ------------------------------------------------------------------ #
@@ -364,10 +412,11 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
 
     bsm_width = meson_decay._total_width
     br_bsm = bsm_width / gamma_sm
-    print("  BSM 3-body width: %.4e GeV   SM 2-body width: %.4e   BR: %.4e"
-          % (bsm_width, gamma_sm, br_bsm))
+    print("  BSM 3-body width (calibrated): %.4e GeV   SM total width: %.4e   BR: %.4e"
+          % (bsm_width * CALIB_VECTOR, gamma_sm, bsm_width * CALIB_VECTOR / gamma_sm))
 
-    meson_dist = load_dk2nu_mesons(dk2nu_data, parent_pdg, detector_model)
+    meson_dist = load_dk2nu_mesons(dk2nu_data, parent_pdg, detector_model,
+                                   upscatter=chain["models"]["upscatter"])
     primary_dists = [meson_dist]
     br_dist = distributions.NormalizationConstant(br_bsm)
     physical_dists = [meson_dist, br_dist]
@@ -432,15 +481,17 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
     print("  Generated %d events" % len(events))
 
     raw = np.array([weighter(ev) for ev in events])
-    oil_volume = _oil(); fid_volume = _fiducial()
-    n_oil = int(np.sum([upscatter_in_oil(ev, oil_volume) for ev in events]))
-    print("  [diag] upscatter on C/H in oil: %d" % n_oil)
+    # Chi upscattering is bounded to fiducial (sv_bounded=Sphere(R_FID)).
+    # Filter uses the same fiducial sphere so the geometry check is consistent.
+    fid_volume = _fiducial()
+    n_oil = int(np.sum([upscatter_in_oil(ev, fid_volume) for ev in events]))
+    print("  [diag] upscatter on C/H in fiducial: %d" % n_oil)
 
     Ev, cs, wv = [], [], []
     for ev, w in zip(events, raw):
         if not np.isfinite(w) or w <= 0:
             continue
-        if not upscatter_in_oil(ev, oil_volume):
+        if not upscatter_in_oil(ev, fid_volume):
             continue
         obs = signal_eepair_observables(ev, fid_volume)
         if obs is None:
@@ -449,7 +500,10 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
         # Absolute normalization: validated production constant x POT x eff.
         # (The dk2nu flux already carries the per-POT factor, so multiply by
         #  the delivered POT to get absolute counts.)
-        w_abs = (w * CALIB_VECTOR * MINIBOONE_POT
+        # Factor 2: V1_PROD -> chi + chi pair; either chi can upscatter
+        # (Dutta-Kim Eq. 4 prefactor). Only chi[0] is propagated by the
+        # stopping condition, so the second chi's contribution is missing.
+        w_abs = (w * 2.0 * CALIB_VECTOR * MINIBOONE_POT
                  * detection_efficiency(E_vis))
         if not np.isfinite(w_abs) or w_abs <= 0:
             continue
