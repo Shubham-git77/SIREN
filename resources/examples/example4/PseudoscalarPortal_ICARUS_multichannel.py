@@ -104,9 +104,10 @@ E_VIS_THRESHOLD = 0.140
 # ICARUS NuMI exposure (SBN programme nominal, neutrino mode).
 ICARUS_POT = 6e20
 #
-# Energy-dependent detection efficiency eps(E_vis) from refs [76,77].
-# Digitize and fill as [[E_GeV, eff], ...]; None -> efficiency 1.0 (a flat
-# efficiency will NOT reproduce the exact shape; this is a placeholder).
+# Energy-dependent detection efficiency eps(E_vis). NOTE: the digitized MiniBooNE
+# single-photon efficiency (mb_eff, ~0.1) does NOT apply here -- ICARUS is a LArTPC
+# with its own (much higher, energy-dependent) EM-shower efficiency. Fill with an
+# ICARUS-specific curve when available; None -> efficiency 1.0 (placeholder).
 _EFF_TABLE = None
 
 def detection_efficiency(E_vis_gev):
@@ -119,6 +120,10 @@ DK2NU_FILE = os.environ.get("DK2NU_FILE", "/home/shubham/nubeamHighSample.dk2nu.
 
 # The four channels: name -> (parent_pdg, m_meson, m_lepton, lepton_pdg,
 #                              nu_pdg, gamma_sm)
+# All four channels included (lepton-universal coupling, g_e = g_mu). NB the paper
+# (Dutta et al. 2110.11944) is muon-only (g_e=0); with g_e=g_mu the helicity-
+# unsuppressed pi->e nu a dominates. For non-universal coupling, scale the
+# electron-channel production coupling by g_e/g_mu.
 CHANNELS = {
     "K_e":   (321, M_KAON, M_ELEC, -11, 12, GAMMA_KAON_SM),
     "K_mu":  (321, M_KAON, M_MUON, -13, 14, GAMMA_KAON_SM),

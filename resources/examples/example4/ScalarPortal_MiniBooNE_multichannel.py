@@ -47,6 +47,8 @@ _DK = _util.load_module("DuttaKim_Dk2nuReader",
                         os.path.join(_PROC_DIR, "Dk2nuReader.py"))
 _DP = _util.load_module("DuttaKim_DarkPrimakoff",
                         os.path.join(_PROC_DIR, "DarkPrimakoff.py"))
+_BNB = _util.load_module("DuttaKim_BNBFlux",
+                         os.path.join(_PROC_DIR, "BNBFlux.py"))
 
 # Scalar production normalization. The vector model needed an empirical
 # constant (2412) to bridge the C-R vector convention to Table II. The scalar
@@ -55,6 +57,18 @@ _DP = _util.load_module("DuttaKim_DarkPrimakoff",
 # scalar production prediction (Fig.4 / Table II scalar rows).
 # TODO: validate BR(K->mu nu phi) against the paper and set this if needed.
 CALIB_SCALAR = 1.0
+
+# Directed-channel acceptance correction -- DEBUNKED 2026-06-21, set to 1.0.
+# The old 1/10.4 factor assumed SIREN's DetectorDirected channel over-counted the
+# phi acceptance by 10.4x. That came from a phi||meson (collinear) estimate of the
+# "physical" acceptance, which we showed OVER-counts the true decay-smeared
+# acceptance by ~40x (measure_acceptance.py: phi||meson 5.2e-2 vs true 1.3e-3, the
+# phi inherits a ~1/gamma_K~220 mrad emission cone). SIREN's REALIZED acceptance,
+# extracted from the event tree (measure_siren_acceptance.py), is 8.5e-4 ~ the true
+# 1.3e-3 -- i.e. the chain does NOT over-count, and importance sampling is unbiased,
+# so NO correction is warranted. (For reliable absolute numbers use
+# reliable_analytic_NS.py; the directed-mode sum here is high-variance/tail-prone.)
+ACCEPTANCE_CORRECTION = 1.0
 
 # ------------------------------------------------------------------ #
 #  Constants                                                           #
@@ -100,14 +114,20 @@ E_VIS_THRESHOLD = 0.140
 # MiniBooNE BNB exposure (neutrino mode).
 MINIBOONE_POT = 6.46e20
 #
-# Energy-dependent detection efficiency eps(E_vis) from refs [76,77].
-# Digitize and fill as [[E_GeV, eff], ...]; None -> efficiency 1.0 (a flat
-# efficiency will NOT reproduce the exact shape; this is a placeholder).
-_EFF_TABLE = None
+# Energy-dependent MiniBooNE single-photon detection efficiency eps(E_vis~E_gamma).
+# Digitized from the panorama review arXiv:2308.02543 (from MiniBooNE single-photon
+# analyses); ~flat 0.09-0.14, 15% systematic; eff=0.102 above 0.9 GeV. The MiniBooNE
+# low-energy excess (~320 events) is defined for E_vis < 300 MeV with an analysis
+# threshold ~140 MeV, so eps -> 0 below E_THRESH.
+_E_THRESH = 0.140   # GeV, single-photon analysis threshold
+_EFF_TABLE = [[0.15, 0.089], [0.25, 0.135], [0.35, 0.139], [0.45, 0.131],
+              [0.55, 0.123], [0.65, 0.116], [0.75, 0.106], [0.90, 0.102]]
 
 def detection_efficiency(E_vis_gev):
     if _EFF_TABLE is None:
         return 1.0
+    if E_vis_gev < _E_THRESH:
+        return 0.0
     E = np.asarray(_EFF_TABLE)[:, 0]; eff = np.asarray(_EFF_TABLE)[:, 1]
     return float(np.interp(E_vis_gev, E, eff, left=eff[0], right=eff[-1]))
 
@@ -115,6 +135,11 @@ DK2NU_FILE = os.environ.get("DK2NU_FILE", "/home/shubham/nubeamHighSample.dk2nu.
 
 # The four channels: name -> (parent_pdg, m_meson, m_lepton, lepton_pdg,
 #                              nu_pdg, gamma_sm)
+# All four channels included (lepton-universal coupling, g_e = g_mu).
+# NB the paper (Dutta et al. 2110.11944) is muon-only (g_e=0); with g_e=g_mu the
+# helicity-UNSUPPRESSED pi->e nu phi is large (for the pseudoscalar pi->e nu a it
+# dominates, ~290x over the 320 excess). For a non-universal coupling, scale the
+# electron-channel production coupling by g_e/g_mu.
 CHANNELS = {
     "K_e":   (321, M_KAON, M_ELEC, -11, 12, GAMMA_KAON_SM),
     "K_mu":  (321, M_KAON, M_MUON, -13, 14, GAMMA_KAON_SM),
@@ -483,7 +508,8 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject, deb
             continue
         E_vis = obs[0]
         # Absolute normalization: C-R calibration × delivered BNB POT × efficiency.
-        w_abs = w * CALIB_SCALAR * MINIBOONE_POT * detection_efficiency(E_vis)
+        w_abs = (w * CALIB_SCALAR * ACCEPTANCE_CORRECTION
+                 * MINIBOONE_POT * detection_efficiency(E_vis))
         if not np.isfinite(w_abs) or w_abs <= 0:
             continue
         Ev.append(E_vis); cs.append(obs[1]); wv.append(w_abs)
@@ -516,12 +542,9 @@ def main():
     print("Loading MiniBooNE detector ...")
     detector_model = siren.utilities.load_detector("SBN", detector="MiniBooNE")
 
-    print("Reading dk2nu (all parents) ...")
-    dk2nu_data = _DK.read_dk2nu(DK2NU_FILE)
-    try:
-        _DK.print_summary(dk2nu_data)
-    except Exception:
-        pass
+    print("Generating BNB meson flux (Sanford-Wang, calibrated to BNB_FHC.dat) ...")
+    dk2nu_data = _BNB.generate_bnb_sample(n_per_species=50000, seed=42)
+    print("  BNB sample: %d mesons (pi+/pi-/K+), POT-normalized" % len(dk2nu_data["E"]))
 
     names = list(CHANNELS) if args.channel == "all" else [args.channel]
     per_channel = {}
