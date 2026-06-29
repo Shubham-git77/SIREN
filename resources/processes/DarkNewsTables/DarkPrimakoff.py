@@ -14,9 +14,10 @@ scattering vertex producing a photon -- there is NO downstream chi'/V1/e+e-
 cascade. The photon IS the visible signal.
 
 Validation status: |M|^2 positive across the physical t-range for all phi
-energies; sigma ~ 1e-30..1e-29 cm^2 on carbon at the Table I/II scalar
-benchmark; E_gamma ~ E_phi confirmed. The absolute rate should be checked
-end-to-end against the ~few-hundred-event MiniBooNE scalar fit (Fig. 2 bottom).
+energies; sigma ~ 6e-33 cm^2 on carbon at the Table I/II scalar benchmark
+(formula validated term-by-term against Eq. C2/C3); E_gamma ~ E_phi confirmed.
+The absolute rate should be checked end-to-end against the ~few-hundred-event
+MiniBooNE scalar fit (Fig. 2 bottom).
 
 Benchmark (Table I/II scalar): m_phi = 1 MeV, m_Z' = 49 MeV,
     (g_mu, g_n, lambda) = (5e-3, 1e-2, 4.4e-4 MeV^-1 = 0.44 GeV^-1).

@@ -111,8 +111,11 @@ events_to_inject = 10_000
 # Reconstruction cuts (single-photon / single-shower selection)
 E_VIS_THRESHOLD = 0.140
 
-# MiniBooNE BNB exposure (neutrino mode).
-MINIBOONE_POT = 6.46e20
+# MiniBooNE BNB exposure (neutrino mode). 18.75e20 = the 2020/2021 dataset
+# (Aguilar-Arevalo et al. 2021a, PRD 103 052002) that the Dutta-Kim Fig.2 fit
+# uses (320 excess below 300 MeV E_vis). The old 6.46e20 was the 2007 first
+# result. NB: this raises N_S ~2.9x vs the old value.
+MINIBOONE_POT = 18.75e20
 #
 # Energy-dependent MiniBooNE single-photon detection efficiency eps(E_vis~E_gamma).
 # Digitized from the panorama review arXiv:2308.02543 (from MiniBooNE single-photon

@@ -118,6 +118,17 @@ def _matel_sq_scalar(E_nu, E_phi, m_M, m_l, m_phi, C2):
     """
     Spin-summed |M|^2 for scalar coupling.
     Carlson & Rislow, Phys.Rev.D 86, 035013 (2012), Eq. 25.
+
+    Normalization: the prefactor is 4.0 (NOT 8.0). The spin-summed numerator
+    was validated from first principles against an explicit Dirac-trace of the
+    single (lepton-leg) radiation diagram with the V-A weak vertex c_w*Pslash*
+    (1-g5), c_w=(G_F/sqrt2) f_M V_Mq, and scalar vertex g_mu (see
+    scratchpad/vm_clean.py / trace_check.py). With C2=(G_F f_M V_Mq g_mu)^2/2
+    = c_w^2 g_mu^2, the 4.0 reproduces both the trace AND Gamma_3body/Gamma_2body
+    = paper Fig.4 ratios across K/pi x scalar/pseudo. An 8.0 here double-counts
+    and makes the production rate exactly 2x too high (a uniform overprediction
+    across all four channels). The vector channel keeps its own T_V * 8.0 plus
+    the empirical CALIB_VECTOR, so it is unaffected by this fix.
     """
     t = m_M**2 - 2.0 * m_M * E_nu
     u = m_M**2 + m_phi**2 - 2.0 * m_M * E_phi
@@ -127,7 +138,7 @@ def _matel_sq_scalar(E_nu, E_phi, m_M, m_l, m_phi, C2):
     common = ((t + u - m_phi**2) * t * D
               - (t**2 - m_l**2 * m_M**2) * (t + m_l**2 - m_phi**2))
     mass_term = m_l**2 * t * (m_M**2 - t)
-    T_S = 8.0 * (common + 2.0 * mass_term)
+    T_S = 4.0 * (common + 2.0 * mass_term)
     return max(C2 * T_S / D**2, 0.0)
 
 
@@ -135,6 +146,10 @@ def _matel_sq_pseudo(E_nu, E_phi, m_M, m_l, m_phi, C2):
     """
     Spin-summed |M|^2 for pseudoscalar coupling.
     Same as scalar but with sign flip on the mass term.
+
+    Prefactor 4.0 (not 8.0): see _matel_sq_scalar for the first-principles
+    normalization (validated by Dirac trace; the sign flip on mass_term is
+    also confirmed). 8.0 would make the rate 2x too high.
     """
     t = m_M**2 - 2.0 * m_M * E_nu
     u = m_M**2 + m_phi**2 - 2.0 * m_M * E_phi
@@ -144,7 +159,7 @@ def _matel_sq_pseudo(E_nu, E_phi, m_M, m_l, m_phi, C2):
     common = ((t + u - m_phi**2) * t * D
               - (t**2 - m_l**2 * m_M**2) * (t + m_l**2 - m_phi**2))
     mass_term = m_l**2 * t * (m_M**2 - t)
-    T_P = 8.0 * (common - 2.0 * mass_term)
+    T_P = 4.0 * (common - 2.0 * mass_term)
     return max(C2 * T_P / D**2, 0.0)
 
 

@@ -41,6 +41,8 @@ _VP = _util.load_module("DuttaKim_VectorPortal",
                         os.path.join(_PROC_DIR, "VectorPortal.py"))
 _DK = _util.load_module("DuttaKim_Dk2nuReader",
                         os.path.join(_PROC_DIR, "Dk2nuReader.py"))
+_BNB = _util.load_module("DuttaKim_BNBFlux",
+                         os.path.join(_PROC_DIR, "BNBFlux.py"))
 
 # Validated absolute-normalization constant (bridges C-R production to Table II)
 CALIB_VECTOR = getattr(_MESON, "CALIB_VECTOR", 2412.0)
@@ -99,8 +101,10 @@ E_PAIR_MAX_DEG = 10.0
 # per event weight so the production rate is on the Table II scale.
 # (Loaded after _MESON import below.)
 #
-# MiniBooNE delivered POT (neutrino mode, Ref [3]): 6.46e20.
-MINIBOONE_POT = 6.46e20
+# MiniBooNE delivered POT (neutrino mode). 18.75e20 = the 2020/2021 dataset
+# (Aguilar-Arevalo 2021a, PRD 103 052002) that the Dutta-Kim Fig.2 fit uses;
+# the old 6.46e20 was the 2007 first result. Matches the scalar/pseudo scripts.
+MINIBOONE_POT = 18.75e20
 #
 # Energy-dependent detection efficiency eps(E_vis) from refs [76,77].
 # Digitize and fill as [[E_GeV, eff], ...]; None -> efficiency 1.0 (a flat
@@ -523,12 +527,9 @@ def main():
     print("Loading MiniBooNE detector ...")
     detector_model = siren.utilities.load_detector("SBN", detector="MiniBooNE")
 
-    print("Reading dk2nu (all parents) ...")
-    dk2nu_data = _DK.read_dk2nu(DK2NU_FILE)
-    try:
-        _DK.print_summary(dk2nu_data)
-    except Exception:
-        pass
+    print("Generating BNB meson flux (Sanford-Wang, calibrated to BNB_FHC.dat) ...")
+    dk2nu_data = _BNB.generate_bnb_sample(n_per_species=50000, seed=42)
+    print("  BNB sample: %d mesons (pi+/pi-/K+), POT-normalized" % len(dk2nu_data["E"]))
 
     names = list(CHANNELS) if args.channel == "all" else [args.channel]
     per_channel = {}
