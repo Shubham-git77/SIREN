@@ -170,13 +170,38 @@ def make_meson_bias(sigma_fn=None):
 # ------------------------------------------------------------------ #
 #  Channel-parameterized model building (SCALAR production + Primakoff) #
 # ------------------------------------------------------------------ #
+# Importance-sampling backend for the meson->l nu phi production:
+#   "directed" = SIREN DetectorDirected3BodyChannel (default).
+#   "cone"     = BiasedMesonThreeBodyDecay (cone-directed, energy-adaptive).
+# The cone sampler samples the phi direction in LAB variables aimed at the
+# detector, so the rest-frame->lab boost Jacobian cancels in the weight
+# (it appears in BOTH the physical and generation densities). This fixes the
+# fat-tailed weights (ESF~0.3%) seen for SBND K_mu with the directed channel,
+# whose proposal leaves the Jacobian uncancelled for forward emission from
+# fast mesons at SBND's close, on-axis geometry.
+_SAMPLER = "directed"
+
 def build_onshell_models(parent_pdg, m_meson, m_lepton, lepton_pdg, nu_pdg):
     """Scalar chain: meson -> l nu phi (validated scalar ME), then a SINGLE
     Dark Primakoff vertex phi N -> gamma N. No chi'/V1/e+e- cascade."""
-    meson_decay = _MESON.MesonThreeBodySIRENDecay(
-        m_meson, m_lepton, M_PHI, G_MU_PROD, "scalar",   # SCALAR production
-        pdgid_meson=parent_pdg, pdgid_lepton=lepton_pdg,
-        pdgid_neutrino=nu_pdg, pdgid_mediator=5919)        # phi = 5919
+    if _SAMPLER == "cone":
+        # m_chi = M_PHI makes m_mediator >= 2*m_chi FALSE, so the chi->chi cone
+        # logic is skipped and the cone falls back to the detector-subtended
+        # angle (correct for the scalar single-phi case, no chi pair).
+        # detector_position=(0,0,0): SBND center in the detector frame (the
+        # frame meson decay vertices live in); radius = phi-scatter sphere.
+        meson_decay = _MESON.BiasedMesonThreeBodyDecay(
+            m_meson=m_meson, m_lepton=m_lepton, m_mediator=M_PHI,
+            m_chi=M_PHI, g_mu=G_MU_PROD, mediator_type="scalar",
+            detector_position=(0.0, 0.0, 0.0),
+            detector_radius=float(os.environ.get("CONE_RADIUS", R_LAR_INJECT)),
+            pdgid_meson=parent_pdg, pdgid_lepton=lepton_pdg,
+            pdgid_neutrino=nu_pdg, pdgid_mediator=5919)
+    else:
+        meson_decay = _MESON.MesonThreeBodySIRENDecay(
+            m_meson, m_lepton, M_PHI, G_MU_PROD, "scalar",   # SCALAR production
+            pdgid_meson=parent_pdg, pdgid_lepton=lepton_pdg,
+            pdgid_neutrino=nu_pdg, pdgid_mediator=5919)        # phi = 5919
     primakoff = _DP.DarkPrimakoffUpsCase(
         M_PHI, M_ZP, G_N, LAMBDA,
         nuclear_pdgid=1000180400, nuclear_mass=M_ARGON40,
@@ -233,6 +258,11 @@ def build_sX_cdf_table(meson_decay, n_nodes=257):
 
 def build_primary_phase_spaces(targets, meson_decay):
     sig = meson_decay.GetPossibleSignatures()[0]
+    if _SAMPLER == "cone":
+        # BiasedMesonThreeBodyDecay self-directs in SampleFinalState, so the
+        # primary phase space is a plain physical decay channel (no separate
+        # DetectorDirected proposal).
+        return {sig: _mc([injection.PhysicalDecayChannel(meson_decay, sig)], [1.0])}
     geo_list = list(targets.values())
     cdf_nodes, cdf_values = build_sX_cdf_table(meson_decay)
     # Tabulated needs a wide enough s_X window; razor-thin windows (e.g.
@@ -579,7 +609,32 @@ def main():
     ap.add_argument("--n-events", type=int, default=events_to_inject)
     ap.add_argument("--debug", action="store_true",
                     help="Print per-vertex LAr sector diagnostics for first 5 events")
+    ap.add_argument("--sampler", choices=["directed", "cone"], default="directed",
+                    help="(siren engine only) production importance sampler")
+    ap.add_argument("--engine", choices=["analytic", "siren"], default="analytic",
+                    help="'analytic' (default, AUTHORITATIVE sigma*N*chord rate) or "
+                         "'siren' (directed-sampler injection; OVER-estimates ~60-400x)")
+    ap.add_argument("--n-dec", type=int, default=400,
+                    help="(analytic engine) decays sampled per meson")
     args = ap.parse_args()
+
+    # --- AUTHORITATIVE analytic engine (default) ------------------------------
+    if args.engine == "analytic":
+        import sys, sbnd_analytic
+        res = sbnd_analytic.report(sys.modules[__name__], "SBND scalar phi->gamma",
+                                   vector=False, n_dec=args.n_dec)
+        os.makedirs("output", exist_ok=True)
+        np.savez("output/SBND_scalar_analytic.npz",
+                 **{f"{n}_E": res[n][0] for n in res},
+                 **{f"{n}_w": res[n][1] for n in res})
+        print("  Saved -> output/SBND_scalar_analytic.npz")
+        return
+
+    global _SAMPLER
+    _SAMPLER = args.sampler
+    print("!! --engine siren: the directed sampler OVER-estimates the rate "
+          "(~60-400x); use --engine analytic for the trustworthy number.")
+    print("Production sampler: %s" % _SAMPLER)
 
     print("Loading SBND detector (GDML) ...")
     detector_model = siren.utilities.load_detector("SBN", detector="SBND")

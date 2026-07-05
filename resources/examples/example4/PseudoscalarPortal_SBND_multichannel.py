@@ -577,8 +577,27 @@ def main():
     ap.add_argument("--n-events", type=int, default=events_to_inject)
     ap.add_argument("--debug", action="store_true",
                     help="Print per-vertex LAr sector diagnostics for first 5 events")
+    ap.add_argument("--engine", choices=["analytic", "siren"], default="analytic",
+                    help="'analytic' (default, AUTHORITATIVE sigma*N*chord rate) or "
+                         "'siren' (directed-sampler injection; OVER-estimates ~60-400x)")
+    ap.add_argument("--n-dec", type=int, default=400,
+                    help="(analytic engine) decays sampled per meson")
     args = ap.parse_args()
 
+    # --- AUTHORITATIVE analytic engine (default) ------------------------------
+    if args.engine == "analytic":
+        import sys, sbnd_analytic
+        res = sbnd_analytic.report(sys.modules[__name__], "SBND pseudoscalar a->gamma",
+                                   vector=False, n_dec=args.n_dec)
+        os.makedirs("output", exist_ok=True)
+        np.savez("output/SBND_pseudo_analytic.npz",
+                 **{f"{n}_E": res[n][0] for n in res},
+                 **{f"{n}_w": res[n][1] for n in res})
+        print("  Saved -> output/SBND_pseudo_analytic.npz")
+        return
+
+    print("!! --engine siren: the directed sampler OVER-estimates the rate "
+          "(~60-400x); use --engine analytic for the trustworthy number.")
     print("Loading SBND detector (GDML) ...")
     detector_model = siren.utilities.load_detector("SBN", detector="SBND")
 
