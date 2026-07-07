@@ -694,6 +694,21 @@ PYBIND11_MODULE(injection,m) {
 
   // Injection
 
+  class_<FailureLedger>(m, "FailureLedger")
+    .def(init<>())
+    .def("Clear", &FailureLedger::Clear)
+    .def("entries", [](FailureLedger const & ledger) {
+        pybind11::dict out;
+        for(auto const & item : ledger.entries) {
+            pybind11::tuple key = pybind11::make_tuple(
+                item.first.depth, item.first.parent_pdg, item.first.reason);
+            pybind11::tuple value = pybind11::make_tuple(
+                item.second.count, item.second.exemplar);
+            out[key] = value;
+        }
+        return out;
+    });
+
   class_<Injector, std::shared_ptr<Injector>>(m, "Injector")
     .def(init<unsigned int, std::shared_ptr<siren::detector::DetectorModel>, std::shared_ptr<siren::utilities::SIREN_random>>())
     .def(init<unsigned int, std::string, std::shared_ptr<siren::utilities::SIREN_random>>())
@@ -722,6 +737,7 @@ PYBIND11_MODULE(injection,m) {
     .def("FailedEvents",&Injector::FailedEvents)
     .def("GetLastFailureReason",&Injector::GetLastFailureReason)
     .def("GetLastFailedTree",&Injector::GetLastFailedTree, pybind11::return_value_policy::reference_internal)
+    .def("GetFailureLedger",&Injector::GetFailureLedger, pybind11::return_value_policy::reference_internal)
     .def("ResetInjectedEvents",overload_cast<unsigned int>(&Injector::ResetInjectedEvents))
     .def("ResetInjectedEvents",overload_cast<>(&Injector::ResetInjectedEvents))
     .def("GetPhaseSpaces",&Injector::GetPhaseSpaces)
@@ -760,6 +776,20 @@ PYBIND11_MODULE(injection,m) {
 
   // Weighter classes
 
+  class_<VertexWeightFactors>(m, "VertexWeightFactors")
+    .def_readonly("depth", &VertexWeightFactors::depth)
+    .def_readonly("generation", &VertexWeightFactors::generation)
+    .def_readonly("physical", &VertexWeightFactors::physical)
+    .def_readonly("interaction_prob", &VertexWeightFactors::interaction_prob)
+    .def_readonly("position_prob", &VertexWeightFactors::position_prob)
+    .def_readonly("channel_densities", &VertexWeightFactors::channel_densities)
+    .def_readonly("cancelled", &VertexWeightFactors::cancelled)
+    .def_readonly("flags", &VertexWeightFactors::flags);
+
+  class_<EventWeightBreakdown>(m, "EventWeightBreakdown")
+    .def_readonly("total", &EventWeightBreakdown::total)
+    .def_readonly("vertices", &EventWeightBreakdown::vertices);
+
   class_<PrimaryProcessWeighter, std::shared_ptr<PrimaryProcessWeighter>>(m, "PrimaryProcessWeighter")
     .def(init<std::shared_ptr<PhysicalProcess>, std::shared_ptr<PrimaryInjectionProcess>, std::shared_ptr<siren::detector::DetectorModel>>())
     .def("InteractionProbability",&PrimaryProcessWeighter::InteractionProbability)
@@ -795,6 +825,7 @@ PYBIND11_MODULE(injection,m) {
     .def(init<std::vector<std::shared_ptr<Injector>>, std::shared_ptr<siren::detector::DetectorModel>, std::shared_ptr<PhysicalProcess>>())
     .def(init<std::vector<std::shared_ptr<Injector>>, std::string>())
     .def("EventWeight",&Weighter::EventWeight)
+    .def("EventWeightWithBreakdown",&Weighter::EventWeightWithBreakdown)
     .def("GetInjectors",&Weighter::GetInjectors)
     .def("GetDetectorModel",&Weighter::GetDetectorModel)
     .def("GetPrimaryPhysicalProcess",&Weighter::GetPrimaryPhysicalProcess)
