@@ -34,6 +34,7 @@
 ### Fixed
 
 - Injector archives carry FailedEvents, and process archives carry the vertex weighting mode (each with a class-version bump; older archives load with the previous defaults). PhysicalProcess copy and move preserve the weighting mode.
+- Weighter archives carry a magic+version header tied to the class version, load into a temporary so a failed parse cannot half-mutate the live weighter, name the file in load errors, and still read headerless version-0 archives.
 - check_closure reports moment_z keyed by the coordinate it measured instead of stamping one z-score under every declared DensityVariable name.
 
 ### Added
