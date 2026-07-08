@@ -79,8 +79,7 @@ def test_save_load_preserves_counters_and_weighting_mode(tmp_path):
     path = str(tmp_path / "injector_roundtrip")
     inj.SaveInjector(path)
 
-    reloaded = injection._Injector.__new__(injection._Injector)
-    reloaded.LoadInjector(path)
+    reloaded = injection._Injector(1, path, utilities.SIREN_random(0))
 
     assert reloaded.InjectionAttempts() == inj.InjectionAttempts()
     assert reloaded.InjectedEvents() == inj.InjectedEvents()
@@ -100,8 +99,7 @@ def test_failed_events_default_when_not_yet_generated(tmp_path):
         events=3, seed=1, weighting_mode=injection.VertexWeightingMode.Propagated())
     path = str(tmp_path / "injector_fresh")
     inj.SaveInjector(path)
-    reloaded = injection._Injector.__new__(injection._Injector)
-    reloaded.LoadInjector(path)
+    reloaded = injection._Injector(1, path, utilities.SIREN_random(0))
     assert reloaded.InjectionAttempts() == 0
     assert reloaded.InjectedEvents() == 0
     assert reloaded.FailedEvents() == 0

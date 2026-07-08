@@ -35,6 +35,7 @@
 
 - Injector archives carry FailedEvents, and process archives carry the vertex weighting mode (each with a class-version bump; older archives load with the previous defaults). PhysicalProcess copy and move preserve the weighting mode.
 - Weighter archives carry a magic+version header tied to the class version, load into a temporary so a failed parse cannot half-mutate the live weighter, name the file in load errors, and still read headerless version-0 archives.
+- Injector archives load into a temporary and move-assign, so a failed parse cannot half-mutate the live injector, and the load errors name the file and which parse (headered or headerless) failed, matching the weighter. The archive header version is now tied to the class version on the save side of both the injector and the weighter, rather than a hand-tracked constant. Enum fields validate their range on load: VertexWeightingMode's bound source and the HNL decay/dipole channel enums (HNLDecay and HNLDipoleDecay ChiralNature, HNLDipoleFromTable HelicityChannel) throw a named runtime error on an out-of-range value instead of silently accepting a corrupt archive. DarkNewsDecay's load_and_construct is now static, the form cereal requires, so a concrete subclass would deserialize through it. The trampoline cereal load unpickles the Python state bytes once instead of twice, so a model's __setstate__ side effects no longer run twice on reload.
 - check_closure reports moment_z keyed by the coordinate it measured instead of stamping one z-score under every declared DensityVariable name.
 
 ### Added
