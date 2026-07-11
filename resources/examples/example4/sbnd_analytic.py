@@ -105,14 +105,15 @@ def ray_sphere_chord(v, d, center, R):
 # coords and R_OIL / MINIBOONE_POT are read from the loaded MiniBooNE script.
 N_C = 3.63e22                              # carbon nuclei / cm^3 in oil
 
-def analytic_sp_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb"):
+def analytic_sp_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb", return_cos=False):
     """MiniBooNE single-photon analog of analytic_sp (sphere geometry, carbon,
     MINIBOONE_POT, MiniBooNE selection eff).  Same production/scatter physics as
     SBND so coupling/production/flux cancel in the SBND/MiniBooNE ratio.
-    Returns (E_vis[GeV], weight[ev])."""
+    Returns (E_vis[GeV], weight[ev]); with return_cos, also the mediator-direction
+    cos(theta) wrt beam (smear by the Primakoff angle downstream for the photon)."""
     pdg, m_M, m_l, lpdg, nupdg, gsm = SMB.CHANNELS[name]
     if (m_M - m_l) <= SMB.M_PHI:
-        return np.array([]), np.array([])
+        return (np.array([]),) * (3 if return_cos else 2)
     ch = SMB.build_onshell_models(pdg, m_M, m_l, lpdg, nupdg)
     md = ch["meson_decay"]._decay; dp = ch["models"]["primakoff"]._dp
     m_phi = md.m_phi; br = ch["meson_decay"]._total_width / gsm
@@ -125,7 +126,7 @@ def analytic_sp_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb"):
     Et = np.concatenate([np.linspace(0.001, 0.3, 120), np.linspace(0.31, 9, 160)])
     st = np.array([dp.total_xsec(float(e)) for e in Et])
     xc, yc = basis(dirK); prefm = w * POT * br
-    rng = np.random.default_rng(seed); Eh, Wh = [], []
+    rng = np.random.default_rng(seed); Eh, Wh, Ch = [], [], []
     for _ in range(n_dec):
         u = rng.random(nK); Es = np.interp(u, cdf, Eg); ps = np.sqrt(np.maximum(Es**2 - m_phi**2, 0))
         c = rng.uniform(-1, 1, nK); az = rng.uniform(0, 2 * math.pi, nK)
@@ -133,10 +134,12 @@ def analytic_sp_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb"):
         chord = ray_sphere_chord(v, dph, DETc, R) * 100.0
         eff = np.ones_like(El) if eff_mode == "raw" else eff_vec(El)   # 'mb' = MiniBooNE sel.
         wd = prefm * np.interp(El, Et, st) * N_C * chord * eff / n_dec
-        m = wd > 0; Eh.append(El[m]); Wh.append(wd[m])
+        m = wd > 0; Eh.append(El[m]); Wh.append(wd[m]); Ch.append(dph[m, 2])
+    if return_cos:
+        return np.concatenate(Eh), np.concatenate(Wh), np.concatenate(Ch)
     return np.concatenate(Eh), np.concatenate(Wh)
 
-def analytic_vec_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb"):
+def analytic_vec_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb", return_cos=False):
     """MiniBooNE analog of analytic_vec (sphere geometry, carbon, MINIBOONE_POT).
     Full vector cascade meson -> l nu V1 ; V1 -> chi chi ; chi N -> chi' N
     (upscatter) ; chi' -> chi V1_sig ; V1_sig -> e+e- ; E_vis = E_{V1_sig}.
@@ -152,7 +155,7 @@ def analytic_vec_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb"):
     Returns (E_vis[GeV], weight[ev])."""
     pdg, m_M, m_l, lpdg, nupdg, gsm = SMB.CHANNELS[name]
     if (m_M - m_l) <= SMB.M_V1:
-        return np.array([]), np.array([])
+        return (np.array([]),) * (3 if return_cos else 2)
     ch = SMB.build_onshell_models(pdg, m_M, m_l, lpdg, nupdg)
     md = ch["meson_decay"]._decay; ups = ch["models"]["upscatter"]._ups
     m_V1 = SMB.M_V1; m_chi = SMB.M_CHI; m_cp = SMB.M_CHI_PRIME
@@ -167,7 +170,7 @@ def analytic_vec_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb"):
     Echi_s = m_V1 / 2.0; pchi_s = math.sqrt(max(Echi_s**2 - m_chi**2, 0))
     E_Vs = (m_cp**2 + m_V1**2 - m_chi**2) / (2 * m_cp); p_Vs = math.sqrt(max(E_Vs**2 - m_V1**2, 0))
     xcK, ycK = basis(dirK); prefm = w * POT * br
-    rng = np.random.default_rng(seed); Eh, Wh = [], []
+    rng = np.random.default_rng(seed); Eh, Wh, Ch = [], [], []
     for _ in range(n_dec):
         u = rng.random(nK); EsV = np.interp(u, cdf, Eg); psV = np.sqrt(np.maximum(EsV**2 - m_V1**2, 0))
         cV = rng.uniform(-1, 1, nK); azV = rng.uniform(0, 2 * math.pi, nK)
@@ -178,12 +181,17 @@ def analytic_vec_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb"):
             Ech, dch = boost(EV1, pV1, dV1, xcV, ycV, Echi_s, pchi_s, sgn * cc, azc)
             chord = ray_sphere_chord(v, dch, DETc, R) * 100.0
             sig = np.where(Ech >= ups.Ethreshold, np.interp(Ech, Et, st, left=0, right=st[-1]), 0.0)
-            gp = np.maximum(Ech / m_cp, 1.0); bp = np.sqrt(np.maximum(1 - 1 / gp**2, 0))
-            cstar = rng.uniform(-1, 1, nK)
-            E_vis = gp * (E_Vs + bp * p_Vs * cstar)
+            # true e+e- system direction via the chi'->chi V1_sig decay (E_vis
+            # bit-identical to gp*(E_Vs+bp*p_Vs*cstar); see analytic_vec).
+            E_cp = np.maximum(Ech, m_cp); p_cp = np.sqrt(np.maximum(E_cp**2 - m_cp**2, 0.0))
+            xcp, ycp = basis(dch)
+            cstar = rng.uniform(-1, 1, nK); azstar = rng.uniform(0, 2 * math.pi, nK)
+            E_vis, dVis = boost(E_cp, p_cp, dch, xcp, ycp, E_Vs, p_Vs, cstar, azstar)
             eff = np.ones_like(E_vis) if eff_mode == "raw" else eff_elike(E_vis)  # 'mb' = MiniBooNE nu_e (e+e-)
             wd = prefm * sig * N_C * chord * eff / n_dec
-            m = wd > 0; Eh.append(E_vis[m]); Wh.append(wd[m])
+            m = wd > 0; Eh.append(E_vis[m]); Wh.append(wd[m]); Ch.append(dVis[m, 2])
+    if return_cos:
+        return np.concatenate(Eh), np.concatenate(Wh), np.concatenate(Ch)
     return np.concatenate(Eh), np.concatenate(Wh)
 
 
