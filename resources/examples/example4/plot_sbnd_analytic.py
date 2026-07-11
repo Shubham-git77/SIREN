@@ -49,15 +49,25 @@ WIN_LO, WIN_HI = 0.140, 0.300         # GeV
 # quoted excess -- it drives the over-prediction factor and hence the anchor.
 MB_EXCESS = 320.0                     # MiniBooNE single-photon excess (events)
 MB_SCRIPTS = {"scalar": "ScalarPortal_MiniBooNE_multichannel.py",
-              "pseudo": "PseudoscalarPortal_MiniBooNE_multichannel.py"}
+              "pseudo": "PseudoscalarPortal_MiniBooNE_multichannel.py",
+              "vector": "VectorPortal_MiniBooNE_fullchain.py"}
 
 
 def mb_inwindow(key, n_dec):
-    """MiniBooNE in-window (muon-only) observable model rate, same engine."""
+    """MiniBooNE in-window observable model rate, same engine as SBND.
+    scalar/pseudo: single-photon, muon-only channels (paper coupling).
+    vector: e+e- cascade, ALL channels (kinetic mixing is lepton-universal);
+    MiniBooNE Cherenkov counts the collimated e+e- as the same electron-like
+    sub-GeV excess, so analytic_vec_mb applies the MiniBooNE single-photon eff."""
     SMB = load_portal(MB_SCRIPTS[key])
+    vector = key == "vector"
+    chans = list(SMB.CHANNELS) if vector else [c for c in SMB.CHANNELS if "mu" in c]
     tot = 0.0
-    for nm in [c for c in SMB.CHANNELS if "mu" in c]:
-        E, w = SA.analytic_sp_mb(SMB, nm, n_dec=n_dec, eff_mode="mb")
+    for nm in chans:
+        if vector:
+            E, w = SA.analytic_vec_mb(SMB, nm, n_dec=n_dec, eff_mode="mb")
+        else:
+            E, w = SA.analytic_sp_mb(SMB, nm, n_dec=n_dec, eff_mode="mb")
         E = np.asarray(E); w = np.asarray(w)
         tot += w[(E >= WIN_LO) & (E <= WIN_HI)].sum()
     return tot, SMB.MINIBOONE_POT
@@ -144,9 +154,6 @@ def make_plot(key, n_dec, eff_mode="lartpc", muon_only=True, level="capability")
     anchored = (level == "anchored")
     if analysis or anchored:
         eff_mode = "lartpc"
-    if anchored and vector:
-        print("  vector   SKIP anchored (e+e- is not the MiniBooNE single-photon 320 excess)")
-        return {}
     # SBND per-hit weight scale: analysis => prod/2 x SEL; anchored => SEL only
     # (prod/2 cancels in the SBND/MB ratio); capability/raw => 1.
     wscale = (PROD_FACTOR * SEL_FACTOR) if analysis else (SEL_FACTOR if anchored else 1.0)
@@ -175,7 +182,7 @@ def make_plot(key, n_dec, eff_mode="lartpc", muon_only=True, level="capability")
         anchor_info = (R, m_win, mb_pot, m_win / MB_EXCESS)
 
     total_ev = sum(d[1].sum() for d in data.values())
-    cos_note = "photon" if dp is not None else "mediator (proxy)"
+    cos_note = "photon" if dp is not None else ("$e^+e^-$ system" if vector else "mediator (proxy)")
 
     # honest mode labels for the title + filename
     if anchored:
@@ -207,7 +214,18 @@ def make_plot(key, n_dec, eff_mode="lartpc", muon_only=True, level="capability")
 
     Ebins = np.linspace(0.0, 2.0, 60)          # GeV
     Cbins = np.linspace(-1.0, 1.0, 80)
-    Czoom = np.linspace(0.80, 1.0, 60)
+    # data-driven zoom lower edge: frame the forward peak of THIS figure (the
+    # vector e+e- system is far more collinear than the Primakoff photon, so a
+    # fixed [0.80,1.0] would not resolve it). Use the weighted 2nd percentile,
+    # rounded to 0.05, capped at 0.95, never coarser than 0.80.
+    allc = np.concatenate([d[2] for d in data.values() if d[2].size]) if data else np.array([])
+    allw = np.concatenate([d[1] for d in data.values() if d[2].size]) if data else np.array([])
+    if allc.size:
+        o = np.argsort(allc); cwz = np.cumsum(allw[o]) / max(allw.sum(), 1e-30)
+        zlo = float(np.clip(np.floor(np.interp(0.02, cwz, allc[o]) * 20) / 20, 0.80, 0.95))
+    else:
+        zlo = 0.80
+    Czoom = np.linspace(zlo, 1.0, 60)
 
     fig, ax = plt.subplots(1, 3, figsize=(18, 5))
     tot_E = tot_C = tot_Cz = None
@@ -236,7 +254,7 @@ def make_plot(key, n_dec, eff_mode="lartpc", muon_only=True, level="capability")
     ax[0].set_xlabel(r"$E_{vis}$ [GeV]"); ax[0].set_ylabel("events / bin")
     ax[1].set_title("%s: $\\cos\\theta$ %s" % (label, pot_note))
     ax[1].set_xlabel(r"$\cos\theta$ wrt beam (%s)" % cos_note); ax[1].set_ylabel("events / bin")
-    ax[2].set_title("%s: $\\cos\\theta$ zoom [0.80, 1.0]" % label)
+    ax[2].set_title("%s: $\\cos\\theta$ zoom [%.2f, 1.0]" % (label, zlo))
     ax[2].set_xlabel(r"$\cos\theta$"); ax[2].set_ylabel("events / bin")
     for a in ax:
         a.legend(fontsize=8)

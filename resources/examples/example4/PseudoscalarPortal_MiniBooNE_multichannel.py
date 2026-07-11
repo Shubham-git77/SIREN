@@ -100,8 +100,10 @@ events_to_inject = 10_000
 # Reconstruction cuts (single-photon / single-shower selection)
 E_VIS_THRESHOLD = 0.140
 
-# MiniBooNE BNB exposure (neutrino mode).
-MINIBOONE_POT = 6.46e20
+# MiniBooNE BNB exposure (neutrino mode); the 320 single-photon excess is quoted
+# at 18.75e20 POT (Aguilar-Arevalo et al. 2021, PRD 103 052002). Was erroneously
+# 6.46e20 (inconsistent with the scalar/vector scripts) -> fixed 2026-07-05.
+MINIBOONE_POT = 18.75e20
 #
 # Energy-dependent MiniBooNE single-photon detection efficiency eps(E_vis~E_gamma).
 # Digitized from the panorama review arXiv:2308.02543 (from MiniBooNE single-photon

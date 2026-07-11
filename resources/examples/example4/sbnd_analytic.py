@@ -38,6 +38,19 @@ def eff_vec(E):
     e = np.interp(E, _EE, _EF, left=_EF[0], right=_EF[-1])
     return np.where(E >= 0.140, e, 0.0)
 
+# --- (mb, vector e+e-) MiniBooNE electron-like (nu_e) efficiency --------------
+# The vector signal is a collimated e+e- pair (opening ~3 deg << the paper's 10 deg
+# acceptance) that MiniBooNE reconstructs as a SINGLE electron-like ring -- Dutta &
+# Kim (2110.11944): "the two Cherenkov rings ... overlap and appear single-ring-like".
+# It is therefore selected with MiniBooNE's nu_e / electron-like efficiency (~0.20,
+# Patterson 2009 NIM A; Wang 2015), NOT the single-photon curve eff_vec used for the
+# scalar/pseudo GENUINE single photon.  Flat representative value; refine with the
+# Patterson/Wang energy-dependent curve if needed.
+EFF_ELIKE = 0.20
+def eff_elike(E):
+    E = np.asarray(E, float)
+    return np.where(E >= 0.140, EFF_ELIKE, 0.0)
+
 # --- (lartpc) SBND liquid-argon EM-shower efficiency -------------------------
 # Two factors, kept separate and transparent:
 #  (1) photon pair-conversion + shower containment INSIDE the SBND fiducial
@@ -122,6 +135,57 @@ def analytic_sp_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb"):
         wd = prefm * np.interp(El, Et, st) * N_C * chord * eff / n_dec
         m = wd > 0; Eh.append(El[m]); Wh.append(wd[m])
     return np.concatenate(Eh), np.concatenate(Wh)
+
+def analytic_vec_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb"):
+    """MiniBooNE analog of analytic_vec (sphere geometry, carbon, MINIBOONE_POT).
+    Full vector cascade meson -> l nu V1 ; V1 -> chi chi ; chi N -> chi' N
+    (upscatter) ; chi' -> chi V1_sig ; V1_sig -> e+e- ; E_vis = E_{V1_sig}.
+
+    EFFICIENCY CHOICE ('mb'): the MiniBooNE Cherenkov detector cannot separate a
+    boosted/collimated e+e- pair from a single electron-like ring, so the vector
+    e+e- signal populates the SAME electron-like sub-GeV excess as the scalar/
+    pseudo single photon.  Following Dutta & Kim (2110.11944) -- who treat the pair
+    as single-ring-like with a <10 deg opening acceptance and apply MiniBooNE's
+    energy-dependent electron-like (nu_e) efficiency (Patterson 2009; Wang 2015) --
+    we weight by the ELECTRON-LIKE efficiency eff_elike (~0.20), NOT the single-
+    photon curve eff_vec used by analytic_sp_mb for the genuine single photon.
+    Returns (E_vis[GeV], weight[ev])."""
+    pdg, m_M, m_l, lpdg, nupdg, gsm = SMB.CHANNELS[name]
+    if (m_M - m_l) <= SMB.M_V1:
+        return np.array([]), np.array([])
+    ch = SMB.build_onshell_models(pdg, m_M, m_l, lpdg, nupdg)
+    md = ch["meson_decay"]._decay; ups = ch["models"]["upscatter"]._ups
+    m_V1 = SMB.M_V1; m_chi = SMB.M_CHI; m_cp = SMB.M_CHI_PRIME
+    br = ch["meson_decay"]._total_width * SMB.CALIB_VECTOR / gsm
+    E, pmag, dirK, v, w = _mesons(SMB, pdg); nK = len(E)
+    DETc = np.asarray(SMB._BNB.DET_CENTER, float); R = SMB.R_OIL; POT = SMB.MINIBOONE_POT
+    Emax = (m_M**2 + m_V1**2 - m_l**2) / (2 * m_M)
+    Eg = np.linspace(m_V1 + 1e-5, Emax - 1e-5, 400)
+    dN = np.array([max(md.differential_decay_rate([e])[0], 0.0) for e in Eg])
+    dN = np.where(np.isfinite(dN) & (dN > 0), dN, 0.0); cdf = np.cumsum(dN); cdf /= cdf[-1]
+    Et = np.linspace(ups.Ethreshold, 9.0, 300); st = np.array([ups.total_xsec(float(e)) for e in Et])
+    Echi_s = m_V1 / 2.0; pchi_s = math.sqrt(max(Echi_s**2 - m_chi**2, 0))
+    E_Vs = (m_cp**2 + m_V1**2 - m_chi**2) / (2 * m_cp); p_Vs = math.sqrt(max(E_Vs**2 - m_V1**2, 0))
+    xcK, ycK = basis(dirK); prefm = w * POT * br
+    rng = np.random.default_rng(seed); Eh, Wh = [], []
+    for _ in range(n_dec):
+        u = rng.random(nK); EsV = np.interp(u, cdf, Eg); psV = np.sqrt(np.maximum(EsV**2 - m_V1**2, 0))
+        cV = rng.uniform(-1, 1, nK); azV = rng.uniform(0, 2 * math.pi, nK)
+        EV1, dV1 = boost(E, pmag, dirK, xcK, ycK, EsV, psV, cV, azV)
+        xcV, ycV = basis(dV1); pV1 = np.sqrt(np.maximum(EV1**2 - m_V1**2, 0))
+        cc = rng.uniform(-1, 1, nK); azc = rng.uniform(0, 2 * math.pi, nK)
+        for sgn in (1.0, -1.0):
+            Ech, dch = boost(EV1, pV1, dV1, xcV, ycV, Echi_s, pchi_s, sgn * cc, azc)
+            chord = ray_sphere_chord(v, dch, DETc, R) * 100.0
+            sig = np.where(Ech >= ups.Ethreshold, np.interp(Ech, Et, st, left=0, right=st[-1]), 0.0)
+            gp = np.maximum(Ech / m_cp, 1.0); bp = np.sqrt(np.maximum(1 - 1 / gp**2, 0))
+            cstar = rng.uniform(-1, 1, nK)
+            E_vis = gp * (E_Vs + bp * p_Vs * cstar)
+            eff = np.ones_like(E_vis) if eff_mode == "raw" else eff_elike(E_vis)  # 'mb' = MiniBooNE nu_e (e+e-)
+            wd = prefm * sig * N_C * chord * eff / n_dec
+            m = wd > 0; Eh.append(E_vis[m]); Wh.append(wd[m])
+    return np.concatenate(Eh), np.concatenate(Wh)
+
 
 def _half(S):
     return np.array([S._TPC_BOX_X, S._TPC_BOX_Y, S._TPC_BOX_Z]) / 2.0
@@ -238,9 +302,18 @@ def analytic_vec(S, name, n_dec=400, seed=7, return_cos=False, eff_mode="mb"):
             chord_m = np.where(hitb, texit - np.clip(tent, 0.0, None), 0.0)
             chord = chord_m * 100.0
             sig = np.where(Ech >= ups.Ethreshold, np.interp(Ech, Et, st, left=0, right=st[-1]), 0.0)
-            gp = np.maximum(Ech / m_cp, 1.0); bp = np.sqrt(np.maximum(1 - 1 / gp**2, 0))
-            cstar = rng.uniform(-1, 1, nK)
-            E_vis = gp * (E_Vs + bp * p_Vs * cstar)
+            # chi' (mass m_cp) inherits the incoming-chi energy and direction in the
+            # coherent, forward upscatter (nuclear recoil negligible => chi' ~ dch,
+            # the small upscatter deflection is sub-dominant to the decay smearing
+            # below).  Its 2-body decay chi'->chi V1_sig is isotropic in the chi'
+            # rest frame; boosting the V1_sig 4-vector to the lab gives BOTH its
+            # energy (E_vis) and its TRUE direction -- the visible e+e- system
+            # points along V1_sig.  (E_vis here is bit-identical to the previous
+            # gp*(E_Vs+bp*p_Vs*cstar); only the direction is newly propagated.)
+            E_cp = np.maximum(Ech, m_cp); p_cp = np.sqrt(np.maximum(E_cp**2 - m_cp**2, 0.0))
+            xcp, ycp = basis(dch)
+            cstar = rng.uniform(-1, 1, nK); azstar = rng.uniform(0, 2 * math.pi, nK)
+            E_vis, dVis = boost(E_cp, p_cp, dch, xcp, ycp, E_Vs, p_Vs, cstar, azstar)
             if eff_mode == "lartpc":
                 # e+e- prompt & charged -> no conversion term; require the
                 # upscatter vertex in the fiducial box, times reco turn-on.
@@ -253,7 +326,7 @@ def analytic_vec(S, name, n_dec=400, seed=7, return_cos=False, eff_mode="mb"):
             else:  # "mb" placeholder
                 eff = eff_vec(E_vis)
             wd = prefm * sig * N_AR * chord * eff / n_dec
-            m = wd > 0; Eh.append(E_vis[m]); Wh.append(wd[m]); Ch.append(dch[m, 2])
+            m = wd > 0; Eh.append(E_vis[m]); Wh.append(wd[m]); Ch.append(dVis[m, 2])
     if return_cos:
         return np.concatenate(Eh), np.concatenate(Wh), np.concatenate(Ch)
     return np.concatenate(Eh), np.concatenate(Wh)
