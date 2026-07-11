@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "SIREN/dataclasses/InteractionRecord.h"
+#include "SIREN/distributions/primary/vertex/VertexPositionDistribution.h"
 #include "SIREN/geometry/BooleanGeometry.h"
 #include "SIREN/geometry/Box.h"
 #include "SIREN/geometry/Cylinder.h"
@@ -9,15 +10,19 @@
 #include "SIREN/injection/DetectorDirectedAngularSectorChannel.h"
 #include "SIREN/injection/DetectorDirected3BodyChannel.h"
 #include "SIREN/injection/DetectorDirectedScatteringChannel.h"
+#include "SIREN/injection/Injector.h"
 #include "SIREN/injection/GeometryVolume.h"
 #include "SIREN/injection/InvariantMassMapping.h"
 #include "SIREN/injection/Isotropic2BodyChannel.h"
 #include "SIREN/injection/PhaseSpaceChannel.h"
 #include "SIREN/injection/PhaseSpaceJacobian.h"
 #include "SIREN/injection/PhysicalChannelAdapters.h"
+#include "SIREN/injection/Process.h"
 #include "SIREN/injection/TwoBodyKinematics.h"
+#include "SIREN/injection/WeightingUtils.h"
 #include "SIREN/interactions/CrossSection.h"
 #include "SIREN/interactions/Decay.h"
+#include "SIREN/interactions/InteractionCollection.h"
 #include "SIREN/math/Vector3D.h"
 #include "SIREN/utilities/Errors.h"
 #include "SIREN/utilities/Random.h"
@@ -247,6 +252,91 @@ InteractionRecord AsymmetricThreeBodyDecayRecord() {
     return record;
 }
 
+class CompletePrimaryDistribution final
+    : public siren::distributions::VertexPositionDistribution {
+private:
+    std::tuple<siren::math::Vector3D, siren::math::Vector3D> SamplePosition(
+        std::shared_ptr<siren::utilities::SIREN_random>,
+        std::shared_ptr<siren::detector::DetectorModel const>,
+        std::shared_ptr<siren::interactions::InteractionCollection const>,
+        siren::dataclasses::PrimaryDistributionRecord &) const override
+    {
+        return {siren::math::Vector3D(0.0, 0.0, 0.0),
+                siren::math::Vector3D(0.0, 0.0, 0.0)};
+    }
+
+public:
+    void Sample(
+        std::shared_ptr<siren::utilities::SIREN_random>,
+        std::shared_ptr<siren::detector::DetectorModel const>,
+        std::shared_ptr<siren::interactions::InteractionCollection const>,
+        siren::dataclasses::PrimaryDistributionRecord & record) const override
+    {
+        record.SetMass(0.0);
+        record.SetFourMomentum({1.0, 0.0, 0.0, 1.0});
+        record.SetInitialPosition({0.0, 0.0, 0.0});
+        record.SetInteractionVertex({0.0, 0.0, 0.0});
+        record.SetHelicity(0.0);
+        record.SetInitialTime(0.0);
+        record.SetInteractionTime(0.0);
+    }
+
+    double GenerationProbability(
+        std::shared_ptr<siren::detector::DetectorModel const>,
+        std::shared_ptr<siren::interactions::InteractionCollection const>,
+        InteractionRecord const &) const override
+    {
+        return 1.0;
+    }
+
+    std::string Name() const override { return "CompletePrimary"; }
+
+    std::shared_ptr<siren::distributions::PrimaryInjectionDistribution>
+    clone() const override
+    {
+        return std::make_shared<CompletePrimaryDistribution>();
+    }
+
+    std::tuple<siren::math::Vector3D, siren::math::Vector3D> InjectionBounds(
+        std::shared_ptr<siren::detector::DetectorModel const>,
+        std::shared_ptr<siren::interactions::InteractionCollection const>,
+        InteractionRecord const &) const override
+    {
+        return {siren::math::Vector3D(0.0, 0.0, 0.0),
+                siren::math::Vector3D(0.0, 0.0, 0.0)};
+    }
+
+protected:
+    bool equal(
+        siren::distributions::WeightableDistribution const & other) const override
+    {
+        return dynamic_cast<CompletePrimaryDistribution const *>(&other) != nullptr;
+    }
+
+    bool less(
+        siren::distributions::WeightableDistribution const &) const override
+    {
+        return false;
+    }
+};
+
+class RetryableFailureInjector final : public siren::injection::Injector {
+public:
+    RetryableFailureInjector(
+        unsigned int attempts,
+        std::shared_ptr<siren::injection::PrimaryInjectionProcess> process,
+        std::shared_ptr<siren::utilities::SIREN_random> random)
+        : Injector(attempts, nullptr, std::move(process), std::move(random)) {}
+
+    void SelectChannel(
+        InteractionRecord &,
+        std::shared_ptr<siren::interactions::InteractionCollection>)
+        const override
+    {
+        throw siren::utilities::InjectionFailure(
+            "test event has no kinematically allowed phase space");
+    }
+};
 
 class ConstantChannel final : public PhaseSpaceChannel {
 public:
@@ -359,8 +449,10 @@ private:
 class MixedSignatureCrossSection final
     : public siren::interactions::CrossSection {
 public:
-    MixedSignatureCrossSection()
-        : signatures_{SignatureWithSecondaries(2), SignatureWithSecondaries(3)} {}
+    explicit MixedSignatureCrossSection(
+        std::vector<std::string> density_variables = {"q2"})
+        : signatures_{SignatureWithSecondaries(2), SignatureWithSecondaries(3)}
+        , density_variables_(std::move(density_variables)) {}
 
     bool equal(siren::interactions::CrossSection const & other) const override {
         return dynamic_cast<MixedSignatureCrossSection const *>(&other) != nullptr;
@@ -401,11 +493,12 @@ public:
         return 1.0;
     }
     std::vector<std::string> DensityVariables() const override {
-        return {"q2"};
+        return density_variables_;
     }
 
 private:
     std::vector<siren::dataclasses::InteractionSignature> signatures_;
+    std::vector<std::string> density_variables_;
 };
 
 MultiChannelPhaseSpace TwoChannelMixture(std::vector<double> weights) {
@@ -590,6 +683,232 @@ TEST(PhysicalAdapterSignature, PinsCrossSectionTopologyAndMeasure) {
         cross_section, three_body);
     EXPECT_EQ(pinned_three.Topology(), PhaseSpaceTopology::Scatter2to3);
     EXPECT_EQ(pinned_three.Measure(), PhaseSpaceMeasure::MandelstamQ2());
+}
+
+TEST(CrossSectionMeasureInference, RecognizesExplicitAzimuthVariables) {
+    auto signature = SignatureWithSecondaries(2);
+
+    MixedSignatureCrossSection fixed_y({"y", "phi"});
+    EXPECT_EQ(fixed_y.MeasureForSignature(signature),
+              PhaseSpaceMeasure::FixedMassYPhi());
+
+    MixedSignatureCrossSection q2_y({"q2", "y", "azimuth"});
+    EXPECT_EQ(q2_y.MeasureForSignature(signature),
+              PhaseSpaceMeasure::MandelstamQ2YPhi());
+
+    MixedSignatureCrossSection bjorken({"bjorken_x", "y", "phi"});
+    EXPECT_EQ(bjorken.MeasureForSignature(signature),
+              PhaseSpaceMeasure::BjorkenXYPhi());
+}
+
+TEST(AzimuthTaxonomy, PredicatesAndCompletionsAgree) {
+    using siren::dataclasses::MeasureHasExplicitAzimuth;
+    using siren::dataclasses::MeasureIntegratesAzimuth;
+    using siren::dataclasses::MeasureWithExplicitAzimuth;
+
+    std::pair<PhaseSpaceMeasure, PhaseSpaceMeasure> lifts[] = {
+        {PhaseSpaceMeasure::MandelstamQ2(), PhaseSpaceMeasure::MandelstamQ2Phi()},
+        {PhaseSpaceMeasure::FixedMassY(), PhaseSpaceMeasure::FixedMassYPhi()},
+        {PhaseSpaceMeasure::BjorkenXY(), PhaseSpaceMeasure::BjorkenXYPhi()},
+        {PhaseSpaceMeasure::MandelstamQ2Y(), PhaseSpaceMeasure::MandelstamQ2YPhi()},
+    };
+    for (auto const & [marginal, joint] : lifts) {
+        EXPECT_TRUE(MeasureIntegratesAzimuth(marginal));
+        EXPECT_FALSE(MeasureHasExplicitAzimuth(marginal));
+        EXPECT_TRUE(MeasureHasExplicitAzimuth(joint));
+        EXPECT_FALSE(MeasureIntegratesAzimuth(joint));
+        EXPECT_EQ(MeasureWithExplicitAzimuth(marginal), joint);
+        EXPECT_EQ(MeasureWithExplicitAzimuth(joint), joint);
+    }
+    EXPECT_TRUE(MeasureHasExplicitAzimuth(PhaseSpaceMeasure::SolidAngleRest()));
+    EXPECT_FALSE(MeasureIntegratesAzimuth(PhaseSpaceMeasure::SolidAngleRest()));
+    EXPECT_EQ(MeasureWithExplicitAzimuth(PhaseSpaceMeasure::SolidAngleRest()),
+              PhaseSpaceMeasure::SolidAngleRest());
+    EXPECT_FALSE(MeasureHasExplicitAzimuth(PhaseSpaceMeasure::Unspecified()));
+    EXPECT_FALSE(MeasureIntegratesAzimuth(PhaseSpaceMeasure::Unspecified()));
+}
+
+TEST(WeightingConvention, ElectsOneCommonConventionForBothDirections) {
+    siren::injection::PhaseSpaceConvention marginal{
+        PhaseSpaceTopology::Scatter2to2,
+        PhaseSpaceMeasure::MandelstamQ2()};
+    siren::injection::PhaseSpaceConvention joint{
+        PhaseSpaceTopology::Scatter2to2,
+        PhaseSpaceMeasure::MandelstamQ2Phi()};
+
+    EXPECT_EQ(
+        siren::injection::ResolveCommonFinalStateConvention(marginal, joint),
+        joint);
+    EXPECT_EQ(
+        siren::injection::ResolveCommonFinalStateConvention(joint, marginal),
+        joint);
+
+    siren::injection::PhaseSpaceConvention different_family{
+        PhaseSpaceTopology::Scatter2to2,
+        PhaseSpaceMeasure::BjorkenXYPhi()};
+    EXPECT_THROW(
+        siren::injection::ResolveCommonFinalStateConvention(
+            marginal, different_family),
+        siren::utilities::MeasureCompatibilityError);
+
+    siren::injection::PhaseSpaceConvention different_topology{
+        PhaseSpaceTopology::Decay2Body,
+        PhaseSpaceMeasure::SolidAngleRest()};
+    EXPECT_THROW(
+        siren::injection::ResolveCommonFinalStateConvention(
+            joint, different_topology),
+        siren::utilities::MeasureCompatibilityError);
+}
+
+TEST(PhysicalChannelAdapters, AcceptExplicitSignatureConventionOverride) {
+    auto scatter_signature = SignatureWithSecondaries(2);
+    auto cross_section = std::make_shared<MixedSignatureCrossSection>();
+    siren::injection::PhaseSpaceConvention scatter_convention{
+        PhaseSpaceTopology::Scatter2to2,
+        PhaseSpaceMeasure::MandelstamQ2Phi()};
+
+    siren::injection::PhysicalCrossSectionChannel scatter(
+        cross_section, scatter_signature, scatter_convention);
+    EXPECT_EQ(scatter.Topology(), scatter_convention.topology);
+    EXPECT_EQ(scatter.Measure(), scatter_convention.measure);
+
+    auto decay_signature = SignatureWithSecondaries(2);
+    auto decay = std::make_shared<MixedSignatureDecay>();
+    siren::injection::PhaseSpaceConvention decay_convention{
+        PhaseSpaceTopology::Decay2Body,
+        PhaseSpaceMeasure::SolidAngleLab(1)};
+
+    siren::injection::PhysicalDecayChannel decay_channel(
+        decay, decay_signature, decay_convention);
+    EXPECT_EQ(decay_channel.Topology(), decay_convention.topology);
+    EXPECT_EQ(decay_channel.Measure(), decay_convention.measure);
+
+    siren::injection::PhaseSpaceConvention wrong_topology{
+        PhaseSpaceTopology::Decay2Body,
+        PhaseSpaceMeasure::SolidAngleRest()};
+    EXPECT_THROW(
+        siren::injection::PhysicalCrossSectionChannel(
+            cross_section, scatter_signature, wrong_topology),
+        siren::utilities::ConfigurationError);
+
+    siren::injection::PhaseSpaceConvention unspecified_measure{
+        PhaseSpaceTopology::Scatter2to2,
+        PhaseSpaceMeasure::Unspecified()};
+    EXPECT_THROW(
+        siren::injection::PhysicalCrossSectionChannel(
+            cross_section, scatter_signature, unspecified_measure),
+        siren::utilities::ConfigurationError);
+}
+
+TEST(WeightingConvention, LiftsNaturalFixedMassYIntoJointProposalMeasure) {
+    auto signature = SignatureWithSecondaries(2);
+    auto cross_section = std::make_shared<MixedSignatureCrossSection>(
+        std::vector<std::string>{"y"});
+    auto interactions =
+        std::make_shared<siren::interactions::InteractionCollection>(
+            siren::dataclasses::ParticleType::unknown,
+            std::vector<std::shared_ptr<siren::interactions::CrossSection>>{
+                cross_section});
+
+    InteractionRecord record;
+    record.signature = signature;
+    siren::injection::PhaseSpaceConvention joint_convention;
+    joint_convention.topology = PhaseSpaceTopology::Scatter2to2;
+    joint_convention.measure = PhaseSpaceMeasure::FixedMassYPhi();
+
+    EXPECT_NEAR(
+        siren::injection::SelectedFinalStateProbability(
+            nullptr, interactions, record, joint_convention),
+        1.0 / (2.0 * M_PI), 1e-14);
+}
+
+TEST(ProcessPhaseSpaceValidation, RejectsPointwiseMarginalizationAtSetup) {
+    auto signature = SignatureWithSecondaries(2);
+    auto cross_section = std::make_shared<MixedSignatureCrossSection>(
+        std::vector<std::string>{"y", "phi"});
+    auto interactions =
+        std::make_shared<siren::interactions::InteractionCollection>(
+            siren::dataclasses::ParticleType::unknown,
+            std::vector<std::shared_ptr<siren::interactions::CrossSection>>{
+                cross_section});
+    siren::injection::PhysicalProcess process(
+        siren::dataclasses::ParticleType::unknown, interactions);
+
+    auto marginal = std::make_shared<MultiChannelPhaseSpace>();
+    marginal->channels = {std::make_shared<ConstantChannel>(
+        1.0, PhaseSpaceTopology::Scatter2to2,
+        PhaseSpaceMeasure::FixedMassY())};
+    marginal->weights = {1.0};
+
+    EXPECT_THROW(
+        process.SetPhaseSpace(signature, marginal),
+        siren::utilities::MeasureCompatibilityError);
+}
+
+TEST(ProcessPhaseSpaceValidation, AcceptsOpaqueModelWithDeclaredMixture) {
+    // An Unspecified model measure makes no claim a mixture can contradict;
+    // the propagated path weights through the mixture density alone.
+    auto signature = SignatureWithSecondaries(2);
+    auto cross_section = std::make_shared<MixedSignatureCrossSection>(
+        std::vector<std::string>{});
+    auto interactions =
+        std::make_shared<siren::interactions::InteractionCollection>(
+            siren::dataclasses::ParticleType::unknown,
+            std::vector<std::shared_ptr<siren::interactions::CrossSection>>{
+                cross_section});
+    siren::injection::PhysicalProcess process(
+        siren::dataclasses::ParticleType::unknown, interactions);
+
+    auto declared = std::make_shared<MultiChannelPhaseSpace>();
+    declared->channels = {std::make_shared<ConstantChannel>(
+        1.0, PhaseSpaceTopology::Scatter2to2,
+        PhaseSpaceMeasure::MandelstamQ2Phi())};
+    declared->weights = {1.0};
+
+    EXPECT_NO_THROW(process.SetPhaseSpace(signature, declared));
+
+    auto decay_shaped = std::make_shared<MultiChannelPhaseSpace>();
+    decay_shaped->channels = {std::make_shared<ConstantChannel>(
+        1.0, PhaseSpaceTopology::Decay2Body,
+        PhaseSpaceMeasure::SolidAngleRest())};
+    decay_shaped->weights = {1.0};
+
+    // The opaque model's topology is a secondary-count heuristic, not a
+    // claim, so a decay-shaped mixture registers too.
+    EXPECT_NO_THROW(process.SetPhaseSpace(signature, decay_shaped));
+}
+
+TEST(ProcessPhaseSpaceValidation, AcceptsForeignChartMixture) {
+    // A mixture on a different chart than the model's inferred convention
+    // (another topology, or another measure family within the topology)
+    // replaces the final-state density wholesale; registration only rejects
+    // the same-family marginalization direction.
+    auto signature = SignatureWithSecondaries(2);
+    auto cross_section = std::make_shared<MixedSignatureCrossSection>(
+        std::vector<std::string>{"bjorken_x", "bjorken_y"});
+    auto interactions =
+        std::make_shared<siren::interactions::InteractionCollection>(
+            siren::dataclasses::ParticleType::unknown,
+            std::vector<std::shared_ptr<siren::interactions::CrossSection>>{
+                cross_section});
+    siren::injection::PhysicalProcess process(
+        siren::dataclasses::ParticleType::unknown, interactions);
+
+    auto decay_shaped = std::make_shared<MultiChannelPhaseSpace>();
+    decay_shaped->channels = {std::make_shared<ConstantChannel>(
+        1.0, PhaseSpaceTopology::Decay2Body,
+        PhaseSpaceMeasure::SolidAngleRest())};
+    decay_shaped->weights = {1.0};
+
+    EXPECT_NO_THROW(process.SetPhaseSpace(signature, decay_shaped));
+
+    auto q2_joint = std::make_shared<MultiChannelPhaseSpace>();
+    q2_joint->channels = {std::make_shared<ConstantChannel>(
+        1.0, PhaseSpaceTopology::Scatter2to2,
+        PhaseSpaceMeasure::MandelstamQ2Phi())};
+    q2_joint->weights = {1.0};
+
+    EXPECT_NO_THROW(process.SetPhaseSpace(signature, q2_joint));
 }
 
 TEST(CommonMeasure, UnspecifiedMajorityCannotOutvoteSpecifiedChannel) {
@@ -966,6 +1285,87 @@ TEST(ScatteringMeasureConversion, MixedFixedMassYAndQ2HasNoInverseYInflation) {
     EXPECT_DOUBLE_EQ(mixture.Density(nullptr, record), expected);
     record.interaction_parameters["bjorken_y"] = 0.8;
     EXPECT_DOUBLE_EQ(mixture.Density(nullptr, record), expected);
+}
+
+TEST(ScatteringMeasureConversion, ExplicitAzimuthWinsAndLiftsMarginal) {
+    constexpr double marginal_density = 6.0;
+    constexpr double joint_density = 2.0;
+
+    MultiChannelPhaseSpace mixture;
+    mixture.channels = {
+        std::make_shared<ConstantChannel>(
+            marginal_density, PhaseSpaceTopology::Scatter2to2,
+            PhaseSpaceMeasure::MandelstamQ2()),
+        std::make_shared<ConstantChannel>(
+            marginal_density, PhaseSpaceTopology::Scatter2to2,
+            PhaseSpaceMeasure::MandelstamQ2()),
+        std::make_shared<ConstantChannel>(
+            joint_density, PhaseSpaceTopology::Scatter2to2,
+            PhaseSpaceMeasure::MandelstamQ2Phi())};
+    mixture.weights = {0.25, 0.25, 0.5};
+
+    InteractionRecord record;
+    EXPECT_EQ(mixture.CommonMeasure(),
+              PhaseSpaceMeasure::MandelstamQ2Phi());
+    EXPECT_NEAR(
+        mixture.Density(nullptr, record),
+        0.5 * marginal_density / (2.0 * M_PI) + 0.5 * joint_density,
+        1e-14);
+
+    siren::injection::PhaseSpaceConvention common = mixture.CommonConvention();
+    EXPECT_EQ(common.topology, PhaseSpaceTopology::Scatter2to2);
+    EXPECT_EQ(common.measure, PhaseSpaceMeasure::MandelstamQ2Phi());
+    EXPECT_DOUBLE_EQ(mixture.DensityIn(nullptr, record, common),
+                     mixture.Density(nullptr, record));
+
+    siren::injection::PhaseSpaceConvention wrong_topology = common;
+    wrong_topology.topology = PhaseSpaceTopology::Decay2Body;
+    EXPECT_THROW(
+        mixture.DensityIn(nullptr, record, wrong_topology),
+        siren::utilities::MeasureCompatibilityError);
+}
+
+TEST(ScatteringMeasureConversion, ExplicitAzimuthCannotBeMarginalizedPointwise) {
+    InteractionRecord record;
+    EXPECT_THROW(
+        siren::injection::ConvertDensity(
+            1.0,
+            PhaseSpaceMeasure::FixedMassYPhi(),
+            PhaseSpaceMeasure::FixedMassY(),
+            PhaseSpaceTopology::Scatter2to2,
+            record),
+        siren::utilities::MeasureCompatibilityError);
+    EXPECT_THROW(
+        siren::injection::ConvertDensity(
+            0.0,
+            PhaseSpaceMeasure::FixedMassYPhi(),
+            PhaseSpaceMeasure::FixedMassY(),
+            PhaseSpaceTopology::Scatter2to2,
+            record),
+        siren::utilities::MeasureCompatibilityError);
+}
+
+TEST(ScatteringMeasureConversion, BjorkenXYConvertsOnlyToQ2Y) {
+    InteractionRecord record;
+    record.target_mass = 0.938;
+    record.primary_momentum = {5.0, 0.0, 0.0, 5.0};
+    record.interaction_parameters["bjorken_y"] = 0.4;
+
+    double converted = siren::injection::ConvertDensity(
+        3.0,
+        PhaseSpaceMeasure::BjorkenXY(),
+        PhaseSpaceMeasure::MandelstamQ2Y(),
+        PhaseSpaceTopology::Scatter2to2,
+        record);
+    EXPECT_GT(converted, 0.0);
+    EXPECT_THROW(
+        siren::injection::ConvertDensity(
+            3.0,
+            PhaseSpaceMeasure::BjorkenXY(),
+            PhaseSpaceMeasure::MandelstamQ2(),
+            PhaseSpaceTopology::Scatter2to2,
+            record),
+        siren::utilities::MeasureCompatibilityError);
 }
 
 TEST(ScatteringMeasureConversion, RejectsDecayStyleLabBoost) {
@@ -1495,6 +1895,29 @@ TEST(KinematicInjectionFailure, DirectedStepsRejectSubThresholdParent) {
         0.0);
 }
 
+TEST(KinematicInjectionFailure, InjectorCountsFailureAsAnAttempt) {
+    auto process = std::make_shared<siren::injection::PrimaryInjectionProcess>(
+        siren::dataclasses::ParticleType::unknown, nullptr);
+    process->AddPrimaryInjectionDistribution(
+        std::make_shared<CompletePrimaryDistribution>());
+    auto random = std::make_shared<siren::utilities::SIREN_random>(244949);
+    RetryableFailureInjector injector(2, process, random);
+
+    siren::dataclasses::InteractionTree first;
+    EXPECT_NO_THROW(first = injector.GenerateEvent());
+    EXPECT_TRUE(first.tree.empty());
+    EXPECT_EQ(injector.InjectionAttempts(), 1u);
+    EXPECT_EQ(injector.InjectedEvents(), 0u);
+
+    siren::dataclasses::InteractionTree second;
+    EXPECT_NO_THROW(second = injector.GenerateEvent());
+    EXPECT_TRUE(second.tree.empty());
+    EXPECT_EQ(injector.InjectionAttempts(), 2u);
+    EXPECT_EQ(injector.InjectedEvents(), 0u);
+
+    // The attempt budget is still enforced after two rejected draws.
+    EXPECT_THROW(injector.GenerateEvent(), std::runtime_error);
+}
 
 TEST(ChannelValidation, TwoBodyConstructorsRejectInvalidDaughterIndices) {
     auto target = siren::geometry::Box(10.0, 10.0, 10.0).create();
