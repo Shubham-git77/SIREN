@@ -48,10 +48,12 @@ def mb_signal(S, vector=False, muon_only=True, n_dec=400):
     (hist over the data bins [events], exact in-window[0.14,0.30] benchmark sum).
     scalar/pseudo: single-photon eff, muon-only; vector: electron-like eff, all channels."""
     fn = SA.analytic_vec_mb if vector else SA.analytic_sp_mb
+    import os as _os
+    meson_fn = SA._mesons_dk2nu if _os.environ.get("FLUX", "dk2nu") == "dk2nu" else None
     chans = list(S.CHANNELS) if (vector or not muon_only) else [c for c in S.CHANNELS if "mu" in c]
     h = np.zeros(len(DATA_E)); inwin = 0.0
     for nm in chans:
-        E, w = fn(S, nm, n_dec=n_dec, eff_mode="mb")
+        E, w = fn(S, nm, n_dec=n_dec, eff_mode="mb", meson_fn=meson_fn)
         E = np.asarray(E); w = np.asarray(w)
         if E.size == 0:
             continue

@@ -38,6 +38,8 @@ def make_plot(key, n_dec=400, muon_only=True):
     pot = S.MINIBOONE_POT
     dp = None if vector else _get_primakoff(S)
     rng = np.random.default_rng(1234)
+    flux = os.environ.get("FLUX", "dk2nu")             # real BNB dk2nu (default) | bnb synthetic
+    meson_fn = SA._mesons_dk2nu if flux == "dk2nu" else None
 
     chans = list(S.CHANNELS)
     if muon_only and not vector:
@@ -46,7 +48,7 @@ def make_plot(key, n_dec=400, muon_only=True):
     data = {}
     for nm in chans:
         fn = SA.analytic_vec_mb if vector else SA.analytic_sp_mb
-        E, w, c = fn(S, nm, n_dec=n_dec, eff_mode="mb", return_cos=True)
+        E, w, c = fn(S, nm, n_dec=n_dec, eff_mode="mb", return_cos=True, meson_fn=meson_fn)
         E, w, c = np.asarray(E), np.asarray(w), np.asarray(c)
         if dp is not None and E.size:          # scalar/pseudo -> true photon dir
             c = smear_photon_beam(c, E, dp, rng)
@@ -88,7 +90,7 @@ def make_plot(key, n_dec=400, muon_only=True):
         if tot is not None:
             a.step(bins[:-1], tot, where="post", color="k", lw=2, label="TOTAL")
 
-    pot_note = "(%.2e POT, MiniBooNE BNB)" % pot
+    pot_note = "(%.2e POT)" % pot
     ax[0].axvline(0.140, color="0.4", ls="--", lw=1)
     ax[0].set_title("%s: $E_{vis}$ %s" % (label, pot_note))
     ax[0].set_xlabel(r"$E_{vis}$ [GeV]"); ax[0].set_ylabel("events / bin")
@@ -99,7 +101,8 @@ def make_plot(key, n_dec=400, muon_only=True):
     for a in ax:
         a.legend(fontsize=8)
     fig.suptitle("MiniBooNE analytic $\\sigma\\!\\cdot\\!N\\!\\cdot\\!$chord  --  %s  --  TOTAL = %.3e events\n"
-                 "%s  |  %s" % (label, total, eff_tag, coup), fontsize=11)
+                 "%s  |  %s  |  flux: %s" % (label, total, eff_tag, coup,
+                 "real dk2nu" if flux == "dk2nu" else "BNBFlux"), fontsize=11)
     plt.tight_layout(rect=[0, 0, 1, 0.93])
 
     os.makedirs(os.path.join(HERE, "output"), exist_ok=True)

@@ -20,6 +20,12 @@ import matplotlib.pyplot as plt
 
 import sbnd_analytic as SA
 
+# Real BNB flux: source the parent mesons from the 12M dk2nu file (the physical
+# flux) instead of the synthetic Sanford-Wang BNBFlux.  FLUX=bnb reverts to the
+# synthetic generator.  The anchor is flux-independent, so the anchored (paper)
+# yields are stable either way; only the raw/capability absolute rates move.
+os.environ.setdefault("DK2NU_FILE", "/home/shubham/nubeam12M.dk2nu.root")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 PORTALS = {
@@ -53,21 +59,23 @@ MB_SCRIPTS = {"scalar": "ScalarPortal_MiniBooNE_multichannel.py",
               "vector": "VectorPortal_MiniBooNE_fullchain.py"}
 
 
-def mb_inwindow(key, n_dec):
+def mb_inwindow(key, n_dec, meson_fn=None):
     """MiniBooNE in-window observable model rate, same engine as SBND.
     scalar/pseudo: single-photon, muon-only channels (paper coupling).
     vector: e+e- cascade, ALL channels (kinetic mixing is lepton-universal);
     MiniBooNE Cherenkov counts the collimated e+e- as the same electron-like
-    sub-GeV excess, so analytic_vec_mb applies the MiniBooNE single-photon eff."""
+    sub-GeV excess, so analytic_vec_mb applies the MiniBooNE single-photon eff.
+    meson_fn=None -> synthetic BNBFlux (default); pass _mesons_dk2nu to source the
+    MiniBooNE side from the real dk2nu file (for a dk2nu-on-both-sides anchor)."""
     SMB = load_portal(MB_SCRIPTS[key])
     vector = key == "vector"
     chans = list(SMB.CHANNELS) if vector else [c for c in SMB.CHANNELS if "mu" in c]
     tot = 0.0
     for nm in chans:
         if vector:
-            E, w = SA.analytic_vec_mb(SMB, nm, n_dec=n_dec, eff_mode="mb")
+            E, w = SA.analytic_vec_mb(SMB, nm, n_dec=n_dec, eff_mode="mb", meson_fn=meson_fn)
         else:
-            E, w = SA.analytic_sp_mb(SMB, nm, n_dec=n_dec, eff_mode="mb")
+            E, w = SA.analytic_sp_mb(SMB, nm, n_dec=n_dec, eff_mode="mb", meson_fn=meson_fn)
         E = np.asarray(E); w = np.asarray(w)
         tot += w[(E >= WIN_LO) & (E <= WIN_HI)].sum()
     return tot, SMB.MINIBOONE_POT
@@ -138,6 +146,11 @@ def make_plot(key, n_dec, eff_mode="lartpc", muon_only=True, level="capability")
     dp = None if vector else _get_primakoff(S)
     rng = np.random.default_rng(1234)
 
+    # flux source: real BNB dk2nu (default) or synthetic BNBFlux (FLUX=bnb).
+    flux = os.environ.get("FLUX", "dk2nu")
+    meson_fn = SA._mesons_dk2nu if flux == "dk2nu" else None
+    flux_label = "real dk2nu" if flux == "dk2nu" else "BNBFlux"
+
     # channel selection: muon-only (g_e=0) drops the electron production channels.
     # Physical for the muon-coupled scalar/pseudoscalar mediator (the paper's model).
     # The vector couples lepton-universally via kinetic mixing, so muon-only is N/A
@@ -160,7 +173,7 @@ def make_plot(key, n_dec, eff_mode="lartpc", muon_only=True, level="capability")
 
     data = {}
     for nm in chan_names:
-        E, w, c = fn(S, nm, n_dec=n_dec, return_cos=True, eff_mode=eff_mode)
+        E, w, c = fn(S, nm, n_dec=n_dec, return_cos=True, eff_mode=eff_mode, meson_fn=meson_fn)
         E, w, c = np.asarray(E), np.asarray(w) * wscale, np.asarray(c)
         # scalar/pseudo: smear mediator dir by the Primakoff opening angle to
         # recover the true PHOTON cos(theta) wrt beam (forward peak with width).
@@ -173,7 +186,7 @@ def make_plot(key, n_dec, eff_mode="lartpc", muon_only=True, level="capability")
     # anchor: rescale so in-window yield = (SBND/MB ratio) x MB measured excess.
     anchor_info = None
     if anchored:
-        m_win, mb_pot = mb_inwindow(key, n_dec)
+        m_win, mb_pot = mb_inwindow(key, n_dec, meson_fn=meson_fn)
         R = win_ev / m_win if m_win > 0 else 0.0
         k = MB_EXCESS / m_win if m_win > 0 else 0.0
         for nm in data:
@@ -247,7 +260,7 @@ def make_plot(key, n_dec, eff_mode="lartpc", muon_only=True, level="capability")
         if tot is not None:
             a.step(bins[:-1], tot, where="post", color="k", lw=2, label="TOTAL")
 
-    pot_note = "(%.1e POT, SBND BNB)" % pot
+    pot_note = "(%.1e POT)" % pot
     if analysis or anchored:
         ax[0].axvspan(WIN_LO, WIN_HI, color="gold", alpha=0.20, label="signal window")
     ax[0].set_title("%s: $E_{vis}$ %s" % (label, pot_note))
@@ -267,7 +280,7 @@ def make_plot(key, n_dec, eff_mode="lartpc", muon_only=True, level="capability")
     else:
         head = ("SBND analytic $\\sigma\\!\\cdot\\!N\\!\\cdot\\!$chord  --  %s  --  TOTAL = %.3e events"
                 % (label, total_ev))
-    fig.suptitle("%s\n%s  |  %s" % (head, eff_tag, coup_tag), fontsize=11)
+    fig.suptitle("%s\n%s  |  %s  |  flux: %s" % (head, eff_tag, coup_tag, flux_label), fontsize=11)
     plt.tight_layout(rect=[0, 0, 1, 0.93])
 
     os.makedirs(os.path.join(HERE, "output"), exist_ok=True)

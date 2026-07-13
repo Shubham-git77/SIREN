@@ -105,7 +105,7 @@ def ray_sphere_chord(v, d, center, R):
 # coords and R_OIL / MINIBOONE_POT are read from the loaded MiniBooNE script.
 N_C = 3.63e22                              # carbon nuclei / cm^3 in oil
 
-def analytic_sp_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb", return_cos=False):
+def analytic_sp_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb", return_cos=False, meson_fn=None):
     """MiniBooNE single-photon analog of analytic_sp (sphere geometry, carbon,
     MINIBOONE_POT, MiniBooNE selection eff).  Same production/scatter physics as
     SBND so coupling/production/flux cancel in the SBND/MiniBooNE ratio.
@@ -117,7 +117,7 @@ def analytic_sp_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb", return_cos=False
     ch = SMB.build_onshell_models(pdg, m_M, m_l, lpdg, nupdg)
     md = ch["meson_decay"]._decay; dp = ch["models"]["primakoff"]._dp
     m_phi = md.m_phi; br = ch["meson_decay"]._total_width / gsm
-    E, pmag, dirK, v, w = _mesons(SMB, pdg); nK = len(E)
+    E, pmag, dirK, v, w = (_mesons if meson_fn is None else meson_fn)(SMB, pdg); nK = len(E)
     DETc = np.asarray(SMB._BNB.DET_CENTER, float); R = SMB.R_OIL; POT = SMB.MINIBOONE_POT
     Emax = (m_M**2 + m_phi**2 - m_l**2) / (2 * m_M)
     Eg = np.linspace(m_phi + 1e-5, Emax - 1e-5, 400)
@@ -139,7 +139,7 @@ def analytic_sp_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb", return_cos=False
         return np.concatenate(Eh), np.concatenate(Wh), np.concatenate(Ch)
     return np.concatenate(Eh), np.concatenate(Wh)
 
-def analytic_vec_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb", return_cos=False):
+def analytic_vec_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb", return_cos=False, meson_fn=None):
     """MiniBooNE analog of analytic_vec (sphere geometry, carbon, MINIBOONE_POT).
     Full vector cascade meson -> l nu V1 ; V1 -> chi chi ; chi N -> chi' N
     (upscatter) ; chi' -> chi V1_sig ; V1_sig -> e+e- ; E_vis = E_{V1_sig}.
@@ -160,7 +160,7 @@ def analytic_vec_mb(SMB, name, n_dec=200, seed=7, eff_mode="mb", return_cos=Fals
     md = ch["meson_decay"]._decay; ups = ch["models"]["upscatter"]._ups
     m_V1 = SMB.M_V1; m_chi = SMB.M_CHI; m_cp = SMB.M_CHI_PRIME
     br = ch["meson_decay"]._total_width * SMB.CALIB_VECTOR / gsm
-    E, pmag, dirK, v, w = _mesons(SMB, pdg); nK = len(E)
+    E, pmag, dirK, v, w = (_mesons if meson_fn is None else meson_fn)(SMB, pdg); nK = len(E)
     DETc = np.asarray(SMB._BNB.DET_CENTER, float); R = SMB.R_OIL; POT = SMB.MINIBOONE_POT
     Emax = (m_M**2 + m_V1**2 - m_l**2) / (2 * m_M)
     Eg = np.linspace(m_V1 + 1e-5, Emax - 1e-5, 400)
@@ -229,17 +229,50 @@ def _mesons(S, pdg):
     return E, pmag, p / pmag[:, None], v, w
 
 
-def analytic_sp(S, name, n_dec=400, seed=7, return_cos=False, eff_mode="mb"):
+# --- real-flux (dk2nu) meson source, for the ICARUS/high-stat BNB path --------
+# Same (E,pmag,dir,v,w) contract as _mesons, but the parents come from a REAL
+# dk2nu file (e.g. nubeam12M.dk2nu.root) instead of the synthetic BNBFlux.  The
+# per-meson weight uses the standard dk2nu convention  w = nimpwt / pot_total  so
+# that  sum(w) = mesons-of-species per POT  (matches the engine's  prefm=w*POT).
+# The file is read ONCE and cached; each species is sub-sampled to n_max parents
+# (with an unbiased  M/n  weight rescale) so the n_dec loop stays fast.
+_DK2NU_CACHE = {}
+def _mesons_dk2nu(S, pdg, n_max=120000, seed=42):
+    path = S.DK2NU_FILE                                 # read once, cache, reuse
+    if path not in _DK2NU_CACHE:
+        _DK2NU_CACHE[path] = S._DK.read_dk2nu(path)     # _DK = DuttaKim_Dk2nuReader
+    d = _DK2NU_CACHE[path]; pot_tot = float(d["pot"])
+    isp = d["ptype"] == pdg
+    E = d["E"][isp]; px = d["px"][isp]; py = d["py"][isp]; pz = d["pz"][isp]
+    vx = d["vx"][isp]; vy = d["vy"][isp]; vz = d["vz"][isp]; nimp = d["nimpwt"][isp]
+    M = len(E); w = nimp / pot_tot                      # mesons/POT per parent
+    if M > n_max:                                       # unbiased sub-sample
+        idx = np.random.default_rng(seed).choice(M, n_max, replace=False)
+        E, px, py, pz, vx, vy, vz = (a[idx] for a in (E, px, py, pz, vx, vy, vz))
+        w = w[idx] * (M / n_max)
+    p = np.stack([px, py, pz], axis=1); pmag = np.linalg.norm(p, axis=1)
+    v = np.stack([vx, vy, vz], axis=1) / 100.0
+    ok = (pmag > 0) & np.isfinite(E)                    # drop pathological p=0 parents
+    return E[ok], pmag[ok], p[ok] / pmag[ok, None], v[ok], w[ok]
+
+
+def analytic_sp(S, name, n_dec=400, seed=7, return_cos=False, eff_mode="mb",
+                det=None, pot=None, meson_fn=None):
     """Scalar / pseudoscalar single-photon. Returns (E_vis[GeV], weight[ev]),
     or (E_vis, weight, cos_theta_beam) of the outgoing photon if return_cos.
-    eff_mode in {'raw','mb','lartpc'} -- see the module efficiency section."""
+    eff_mode in {'raw','mb','lartpc'} -- see the module efficiency section.
+    det/pot/meson_fn default to SBND (DET, S.SBND_POT, synthetic BNBFlux); pass
+    the ICARUS box center, ICARUS_POT and _mesons_dk2nu for the ICARUS path."""
     pdg, m_M, m_l, lpdg, nupdg, gsm = S.CHANNELS[name]
     if (m_M - m_l) <= S.M_PHI:
         return (np.array([]),) * (3 if return_cos else 2)
+    DETc = DET if det is None else np.asarray(det, float)
+    mf = _mesons if meson_fn is None else meson_fn
     ch = S.build_onshell_models(pdg, m_M, m_l, lpdg, nupdg)
     md = ch["meson_decay"]._decay; dp = ch["models"]["primakoff"]._dp
     m_phi = md.m_phi; br = ch["meson_decay"]._total_width / gsm
-    E, pmag, dirK, v, w = _mesons(S, pdg); nK = len(E); HALF = _half(S); POT = S.SBND_POT
+    E, pmag, dirK, v, w = mf(S, pdg); nK = len(E); HALF = _half(S)
+    POT = S.SBND_POT if pot is None else pot
     HALF_FID = HALF - CONT_MARGIN                       # fiducial (inset) box half-extents
     Emax = (m_M**2 + m_phi**2 - m_l**2) / (2 * m_M)
     Eg = np.linspace(m_phi + 1e-5, Emax - 1e-5, 400)
@@ -253,7 +286,7 @@ def analytic_sp(S, name, n_dec=400, seed=7, return_cos=False, eff_mode="mb"):
         u = rng.random(nK); Es = np.interp(u, cdf, Eg); ps = np.sqrt(np.maximum(Es**2 - m_phi**2, 0))
         c = rng.uniform(-1, 1, nK); az = rng.uniform(0, 2 * math.pi, nK)
         El, dph = boost(E, pmag, dirK, xc, yc, Es, ps, c, az)
-        tent, texit, hitb = ray_box_enter_exit(v, dph, DET, HALF)
+        tent, texit, hitb = ray_box_enter_exit(v, dph, DETc, HALF)
         chord_m = np.where(hitb, texit - np.clip(tent, 0.0, None), 0.0)
         chord = chord_m * 100.0
         if eff_mode == "lartpc":
@@ -262,7 +295,7 @@ def analytic_sp(S, name, n_dec=400, seed=7, return_cos=False, eff_mode="mb"):
             # box -- convert within its fiducial path length, times reco turn-on.
             us = rng.random(nK)
             Ps = v + (np.clip(tent, 0.0, None) + us * chord_m)[:, None] * dph
-            Lfid = ray_box_chord(Ps, dph, DET, HALF_FID) * 100.0   # cm inside fiducial
+            Lfid = ray_box_chord(Ps, dph, DETc, HALF_FID) * 100.0   # cm inside fiducial
             eff = (1.0 - np.exp(-Lfid / LAMBDA_CONV)) * reco_turnon(El)
         elif eff_mode == "raw":
             eff = 1.0
@@ -275,19 +308,25 @@ def analytic_sp(S, name, n_dec=400, seed=7, return_cos=False, eff_mode="mb"):
     return np.concatenate(Eh), np.concatenate(Wh)
 
 
-def analytic_vec(S, name, n_dec=400, seed=7, return_cos=False, eff_mode="mb"):
+def analytic_vec(S, name, n_dec=400, seed=7, return_cos=False, eff_mode="mb",
+                 det=None, pot=None, meson_fn=None):
     """Vector double-mediator e+e- via the full cascade. Returns (E_vis[GeV], weight),
     or (E_vis, weight, cos_theta_beam) of the upscattered visible system if return_cos.
     eff_mode in {'raw','mb','lartpc'}. For the e+e- final state 'lartpc' uses
-    containment x reco (no photon-conversion term -- e+e- are charged/prompt)."""
+    containment x reco (no photon-conversion term -- e+e- are charged/prompt).
+    det/pot/meson_fn default to SBND; pass ICARUS box center, ICARUS_POT and
+    _mesons_dk2nu for the ICARUS path."""
     pdg, m_M, m_l, lpdg, nupdg, gsm = S.CHANNELS[name]
     if (m_M - m_l) <= S.M_V1:
         return (np.array([]),) * (3 if return_cos else 2)
+    DETc = DET if det is None else np.asarray(det, float)
+    mf = _mesons if meson_fn is None else meson_fn
     ch = S.build_onshell_models(pdg, m_M, m_l, lpdg, nupdg)
     md = ch["meson_decay"]._decay; ups = ch["models"]["upscatter"]._ups
     m_V1 = S.M_V1; m_chi = S.M_CHI; m_cp = S.M_CHI_PRIME
     br = ch["meson_decay"]._total_width * S.CALIB_VECTOR / gsm
-    E, pmag, dirK, v, w = _mesons(S, pdg); nK = len(E); HALF = _half(S); POT = S.SBND_POT
+    E, pmag, dirK, v, w = mf(S, pdg); nK = len(E); HALF = _half(S)
+    POT = S.SBND_POT if pot is None else pot
     HALF_FID = HALF - CONT_MARGIN
     Emax = (m_M**2 + m_V1**2 - m_l**2) / (2 * m_M)
     Eg = np.linspace(m_V1 + 1e-5, Emax - 1e-5, 400)
@@ -306,7 +345,7 @@ def analytic_vec(S, name, n_dec=400, seed=7, return_cos=False, eff_mode="mb"):
         cc = rng.uniform(-1, 1, nK); azc = rng.uniform(0, 2 * math.pi, nK)
         for sgn in (1.0, -1.0):
             Ech, dch = boost(EV1, pV1, dV1, xcV, ycV, Echi_s, pchi_s, sgn * cc, azc)
-            tent, texit, hitb = ray_box_enter_exit(v, dch, DET, HALF)
+            tent, texit, hitb = ray_box_enter_exit(v, dch, DETc, HALF)
             chord_m = np.where(hitb, texit - np.clip(tent, 0.0, None), 0.0)
             chord = chord_m * 100.0
             sig = np.where(Ech >= ups.Ethreshold, np.interp(Ech, Et, st, left=0, right=st[-1]), 0.0)
@@ -327,7 +366,7 @@ def analytic_vec(S, name, n_dec=400, seed=7, return_cos=False, eff_mode="mb"):
                 # upscatter vertex in the fiducial box, times reco turn-on.
                 us = rng.random(nK)
                 Ps = v + (np.clip(tent, 0.0, None) + us * chord_m)[:, None] * dch
-                in_fid = np.all(np.abs(Ps - DET) <= HALF_FID, axis=1)
+                in_fid = np.all(np.abs(Ps - DETc) <= HALF_FID, axis=1)
                 eff = in_fid.astype(float) * reco_turnon(E_vis)
             elif eff_mode == "raw":
                 eff = 1.0
