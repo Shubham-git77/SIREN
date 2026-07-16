@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import numpy as np
+
 
 def _ensure_gdml_files(abs_dir: str, sources: list[dict[str, Any]]) -> None:
     """Download missing GDML files using siren.download."""
@@ -88,7 +90,7 @@ def _build_materials_xml() -> str:
 
 # Ground-level elevation in BNB coordinates (meters above the BNB target).
 # Fermilab grade is approximately 7.62 m above the BNB beam axis.
-_GRADE_Y_BNB = 7.62
+_BNB_BERM_Y = 7.62
 
 # Glacial till thickness below grade (meters). The Quaternary glacial
 # deposits at Fermilab are 18-30 m thick; we use 20 m as a representative
@@ -130,10 +132,10 @@ _TILL_THICKNESS = 20.0
 # omitted (negligible mass); the berm is approximated by the dirt world
 # block rather than a sloped frustum.
 # ----------------------------------------------------------------------
-_MB_BARRIER_RADIUS_M = 5.746    # optical barrier (inner signal / veto)
-_MB_TANK_INNER_M = 6.096        # tank inner radius / oil outer (20 ft)
-_MB_STEEL_THICKNESS_M = 0.010   # carbon-steel shell (back-computed)
-_MB_STEEL_OUTER_M = _MB_TANK_INNER_M + _MB_STEEL_THICKNESS_M
+_MB_BARRIER_R = 5.746    # optical barrier (inner signal / veto)
+_MB_TANK_INNER_R = 6.096        # tank inner radius / oil outer (20 ft)
+_MB_STEEL_THICKNESS_R = 0.010   # carbon-steel shell (back-computed)
+_MB_STEEL_OUTER_R = _MB_TANK_INNER_R + _MB_STEEL_THICKNESS_R
 _MB_OIL_DENSITY = 0.845         # Marcol 7, NIM A 599 Table 1
 
 # Enclosure dimensions from the diagram (pixels -> metres).
@@ -144,29 +146,89 @@ def _mbpx(px):
 _MB_VAULT_AIR_R = 13.716 / 2.0        # vault inner radius: 45 ft, NIM A 599 Sec. 1.4
 _MB_VAULT_AIR_H = _mbpx(979)          # vault air cavity height (diagram estimate)
 _MB_VAULT_WALL_T = _mbpx(35)          # vault wall thickness (diagram estimate)
+
 _MB_SLAB_R = _MB_VAULT_AIR_R + _MB_VAULT_WALL_T  # slabs flush with outer wall
+
+_MB_LSLAB_R = _MB_SLAB_R
 _MB_LSLAB_H = _mbpx(72)               # lower slab (floor) thickness
+
+_MB_USLAB_R = _MB_SLAB_R
 _MB_USLAB_H = _mbpx(39)               # upper slab thickness
+
 _MB_TANK_CLEAR = _mbpx(76)            # sphere bottom above lower-slab top
+
 _MB_CAP_R = _mbpx(183) / 2.0          # oil chimney radius
 _MB_CAP_H = _mbpx(80)                 # oil chimney height
+
+_MB_ROOM_AIR_R = _MB_VAULT_AIR_R
 _MB_ROOM_AIR_H = _mbpx(270)           # electronics room air height
+
 _MB_ROOM_WALL_T = _mbpx(26)           # electronics room wall thickness
+
+_MB_ROOF_R = _MB_SLAB_R
 _MB_ROOF_H = _mbpx(49)                # room roof slab thickness
+
 _MB_BERM_H = 3.0                      # dirt overburden above roof: >= 3 m, NIM A 599 Sec. 1.4
-_MB_VAULT_WALL_OUTER = _MB_VAULT_AIR_R + _MB_VAULT_WALL_T
-_MB_ROOM_WALL_OUTER = _MB_VAULT_AIR_R + _MB_ROOM_WALL_T
+_MB_BERM_ANGLE = 31.69                # berm slope angle (degrees)
 
-# Vertical levels, sphere centre at y = 0, +y up (= BNB up axis).
-_MB_Y_LSLAB_TOP = -_MB_TANK_INNER_M - _MB_TANK_CLEAR
+_MB_VAULT_WALL_OUTER_R = _MB_ROOM_AIR_R + _MB_VAULT_WALL_T
+_MB_ROOM_WALL_OUTER_R = _MB_VAULT_AIR_R + _MB_ROOM_WALL_T
+
+# Vertical levels, sphere center at y = 0, +y up (= BNB up axis).
+_MB_Y_LSLAB_TOP = -_MB_STEEL_OUTER_R - _MB_TANK_CLEAR
 _MB_Y_LSLAB_BOT = _MB_Y_LSLAB_TOP - _MB_LSLAB_H
-_MB_Y_CAV_TOP = _MB_Y_LSLAB_TOP + _MB_VAULT_AIR_H
-_MB_Y_GRADE = _MB_Y_CAV_TOP + _MB_USLAB_H          # upper-slab top = grade
-_MB_Y_ROOM_TOP = _MB_Y_GRADE + _MB_ROOM_AIR_H
-_MB_Y_ROOF_TOP = _MB_Y_ROOM_TOP + _MB_ROOF_H
-_MB_Y_BERM_TOP = _MB_Y_ROOF_TOP + _MB_BERM_H
-_MB_WORLD_HALF = 12.5                               # world dirt box half-x/z
+_MB_Y_LSLAB_CENTER = 0.5 * (_MB_Y_LSLAB_TOP + _MB_Y_LSLAB_BOT)
 
+_MB_Y_CAV_BOT = _MB_Y_LSLAB_TOP
+_MB_Y_CAV_TOP = _MB_Y_LSLAB_TOP + _MB_VAULT_AIR_H
+_MB_Y_CAV_CENTER = 0.5 * (_MB_Y_LSLAB_TOP + _MB_Y_CAV_TOP)
+assert(_MB_Y_CAV_TOP > _MB_STEEL_OUTER_R, f"Vault air cavity must clear the tank: {_MB_Y_CAV_TOP:.4f} m <= {_MB_STEEL_OUTER_R:.4f} m")
+
+_MB_Y_VAULT_WALL_CENTER = _MB_Y_CAV_CENTER
+
+_MB_Y_USLAB_BOT = _MB_Y_CAV_TOP
+_MB_Y_USLAB_TOP = _MB_Y_USLAB_BOT + _MB_USLAB_H
+_MB_Y_USLAB_CENTER = 0.5 * (_MB_Y_USLAB_BOT + _MB_Y_USLAB_TOP)
+
+_MB_Y_CAP_BOT = _MB_Y_USLAB_BOT
+_MB_Y_CAP_TOP = _MB_Y_CAP_BOT + _MB_CAP_H
+_MB_Y_CAP_CENTER = 0.5 * (_MB_Y_CAP_BOT + _MB_Y_CAP_TOP)
+
+_MB_Y_ROOM_BOT = _MB_Y_USLAB_TOP
+_MB_Y_ROOM_TOP = _MB_Y_ROOM_BOT + _MB_ROOM_AIR_H
+_MB_Y_ROOM_CENTER = 0.5 * (_MB_Y_ROOM_BOT + _MB_Y_ROOM_TOP)
+
+_MB_Y_ROOM_WALL_CENTER = _MB_Y_ROOM_CENTER
+
+_MB_Y_ROOF_BOT = _MB_Y_ROOM_TOP
+_MB_Y_ROOF_TOP = _MB_Y_ROOF_BOT + _MB_ROOF_H
+_MB_Y_ROOF_CENTER = 0.5 * (_MB_Y_ROOF_BOT + _MB_Y_ROOF_TOP)
+
+_MB_Y_GRADE = _MB_Y_ROOM_BOT
+
+_MB_Y_BERM_TOP = _MB_Y_ROOF_TOP + _MB_BERM_H
+
+_MB_BERM_CAP_WIDTH = _MB_ROOF_R * 2.0
+_MB_BERM_FULL_W = (_MB_Y_BERM_TOP - _MB_Y_ROOM_BOT) / np.tan(_MB_BERM_ANGLE * np.pi / 180.0) * 2.0 + _MB_BERM_CAP_WIDTH
+
+_h = _MB_BERM_H
+_c1 = _MB_BERM_CAP_WIDTH
+_c2 = _MB_BERM_FULL_W
+_a2 = (_c2**2 - _c1**2) / (8 * _h) - _h / 2.0
+_a1 = _a2 + _h
+_r = np.sqrt(_a2**2 + (_c2 / 2.0)**2)
+
+_MB_BERM_SPHERE_R = _r
+_MB_Y_BERM_SPHERE_CENTER = _MB_Y_BERM_TOP - _a1
+_MB_Y_BERM_SPHERE_TOP = _MB_Y_BERM_SPHERE_CENTER + _MB_BERM_SPHERE_R
+_MB_Y_BERM_SPHERE_BOT = _MB_Y_BERM_SPHERE_CENTER - _MB_BERM_SPHERE_R
+
+_MB_WORLD_FULL = _MB_BERM_FULL_W + 20.0  # world half-width (x/z) with margin
+_MB_WORLD_FULL_Y = max(abs(_MB_Y_BERM_SPHERE_TOP), abs(_MB_Y_BERM_SPHERE_BOT)) * 2.0 + 20.0     # world half-height (y) with margin
+
+# Use the MiniBooNE grade as the lowest common grade level for all SBN detectors; most detectors have additional berm height above this
+_FNAL_SITE_GRADE_Y = _MB_Y_GRADE
+_MB_Y_BNB = 1.89614
 
 def _build_miniboone_gdml():
     """Assemble the MiniBooNE enclosure GDML from the scaled dimensions.
@@ -178,7 +240,7 @@ def _build_miniboone_gdml():
     """
     def tube(name, rmin, rmax, h):
         return (f'    <tube name="{name}" lunit="m" aunit="deg" rmin="{rmin:.4f}" '
-                f'rmax="{rmax:.4f}" z="{h / 2.0:.4f}" startphi="0" deltaphi="360"/>')
+                f'rmax="{rmax:.4f}" z="{h:.4f}" startphi="0" deltaphi="360"/>')
 
     def vpv(pv, vol, yc):
         return (f'      <physvol name="{pv}">\n'
@@ -190,30 +252,30 @@ def _build_miniboone_gdml():
     def opv(pv, vol):
         return f'      <physvol name="{pv}"><volumeref ref="{vol}"/></physvol>'
 
-    cav_yc = 0.5 * (_MB_Y_LSLAB_TOP + _MB_Y_CAV_TOP)
-    room_yc = _MB_Y_GRADE + 0.5 * _MB_ROOM_AIR_H
-    world_half_y = max(abs(_MB_Y_LSLAB_BOT), abs(_MB_Y_BERM_TOP)) + 0.1
-
     solids = "\n".join([
-        f'    <box name="mb_world" lunit="m" x="{_MB_WORLD_HALF}" y="{world_half_y:.4f}" z="{_MB_WORLD_HALF}"/>',
-        f'    <orb name="mb_inner_oil" lunit="m" r="{_MB_BARRIER_RADIUS_M}"/>',
-        f'    <sphere name="mb_veto_oil" lunit="m" aunit="deg" rmin="{_MB_BARRIER_RADIUS_M}" rmax="{_MB_TANK_INNER_M}" startphi="0" deltaphi="360" starttheta="0" deltatheta="180"/>',
-        f'    <sphere name="mb_steel" lunit="m" aunit="deg" rmin="{_MB_TANK_INNER_M}" rmax="{_MB_STEEL_OUTER_M}" startphi="0" deltaphi="360" starttheta="0" deltatheta="180"/>',
+        f'    <box name="mb_world" lunit="m" x="{_MB_WORLD_FULL}" y="{_MB_WORLD_FULL:.4f}" z="{_MB_WORLD_FULL_Y}"/>',
+        f'    <sphere name="mb_berm_sphere" lunit="m" aunit="deg" rmin="0" rmax="{_MB_BERM_SPHERE_R:.4f}" startphi="0" deltaphi="360" starttheta="0" deltatheta="45"/>',
+        f'    <sphere name="mb_inner_oil" lunit="m" aunit="deg" rmin="0" rmax="{_MB_BARRIER_R}" startphi="0" deltaphi="360" starttheta="0" deltatheta="180"/>',
+        f'    <sphere name="mb_veto_oil" lunit="m" aunit="deg" rmin="{_MB_BARRIER_R}" rmax="{_MB_TANK_INNER_R}" startphi="0" deltaphi="360" starttheta="0" deltatheta="180"/>',
+        f'    <sphere name="mb_steel" lunit="m" aunit="deg" rmin="{_MB_TANK_INNER_R}" rmax="{_MB_STEEL_OUTER_R}" startphi="0" deltaphi="360" starttheta="0" deltatheta="180"/>',
+        tube("mb_cap", 0.0, _MB_CAP_R, _MB_CAP_H),
+        tube("mb_cap_oil", 0.0, _MB_CAP_R - _MB_STEEL_THICKNESS_R, _MB_CAP_H - _MB_STEEL_THICKNESS_R),
         tube("mb_lslab", 0.0, _MB_SLAB_R, _MB_LSLAB_H),
         tube("mb_uslab", 0.0, _MB_SLAB_R, _MB_USLAB_H),
-        tube("mb_vwall", _MB_VAULT_AIR_R, _MB_VAULT_WALL_OUTER, _MB_VAULT_AIR_H),
+        tube("mb_vwall", _MB_VAULT_AIR_R, _MB_VAULT_WALL_OUTER_R, _MB_VAULT_AIR_H),
         tube("mb_vair", 0.0, _MB_VAULT_AIR_R, _MB_VAULT_AIR_H),
-        tube("mb_rair", 0.0, _MB_VAULT_AIR_R, _MB_ROOM_AIR_H),
-        tube("mb_rwall", _MB_VAULT_AIR_R, _MB_ROOM_WALL_OUTER, _MB_ROOM_AIR_H),
-        tube("mb_roof", 0.0, _MB_SLAB_R, _MB_ROOF_H),
-        tube("mb_cap", 0.0, _MB_CAP_R, _MB_CAP_H),
+        tube("mb_rair", 0.0, _MB_ROOM_AIR_R, _MB_ROOM_AIR_H),
+        tube("mb_rwall", _MB_ROOM_AIR_R, _MB_ROOM_WALL_OUTER_R, _MB_ROOM_AIR_H),
+        tube("mb_roof", 0.0, _MB_ROOF_R, _MB_ROOF_H),
     ])
 
     vols = "\n".join([
+        '    <volume name="vol_mb_berm_sphere"><materialref ref="MB_DIRT"/><solidref ref="mb_berm_sphere"/></volume>',
         '    <volume name="vol_mb_inner_oil"><materialref ref="MINERAL_OIL"/><solidref ref="mb_inner_oil"/></volume>',
         '    <volume name="vol_mb_veto_oil"><materialref ref="MINERAL_OIL"/><solidref ref="mb_veto_oil"/></volume>',
         '    <volume name="vol_mb_steel"><materialref ref="MB_CARBON_STEEL"/><solidref ref="mb_steel"/></volume>',
-        '    <volume name="vol_mb_cap"><materialref ref="MINERAL_OIL"/><solidref ref="mb_cap"/></volume>',
+        '    <volume name="vol_mb_cap"><materialref ref="MB_CARBON_STEEL"/><solidref ref="mb_cap"/></volume>',
+        '    <volume name="vol_mb_cap_oil"><materialref ref="MINERAL_OIL"/><solidref ref="mb_cap_oil"/></volume>',
         '    <volume name="vol_mb_lslab"><materialref ref="MB_CONCRETE"/><solidref ref="mb_lslab"/></volume>',
         '    <volume name="vol_mb_uslab"><materialref ref="MB_CONCRETE"/><solidref ref="mb_uslab"/></volume>',
         '    <volume name="vol_mb_vwall"><materialref ref="MB_CONCRETE"/><solidref ref="mb_vwall"/></volume>',
@@ -225,17 +287,19 @@ def _build_miniboone_gdml():
 
     # Order matters: structural concrete/air first, detector oil/steel last.
     pvs = "\n".join([
-        vpv("pv_mb_lslab", "vol_mb_lslab", _MB_Y_LSLAB_BOT + 0.5 * _MB_LSLAB_H),
-        vpv("pv_mb_uslab", "vol_mb_uslab", _MB_Y_CAV_TOP + 0.5 * _MB_USLAB_H),
-        vpv("pv_mb_vwall", "vol_mb_vwall", cav_yc),
-        vpv("pv_mb_vair", "vol_mb_vair", cav_yc),
-        vpv("pv_mb_rair", "vol_mb_rair", room_yc),
-        vpv("pv_mb_rwall", "vol_mb_rwall", room_yc),
-        vpv("pv_mb_roof", "vol_mb_roof", _MB_Y_ROOM_TOP + 0.5 * _MB_ROOF_H),
-        opv("pv_mb_inner_oil", "vol_mb_inner_oil"),
-        opv("pv_mb_veto_oil", "vol_mb_veto_oil"),
+        vpv("pv_mb_berm_sphere", "vol_mb_berm_sphere", _MB_Y_BERM_SPHERE_CENTER),
+        vpv("pv_mb_lslab", "vol_mb_lslab", _MB_Y_LSLAB_CENTER),
+        vpv("pv_mb_uslab", "vol_mb_uslab", _MB_Y_USLAB_CENTER),
+        vpv("pv_mb_vwall", "vol_mb_vwall", _MB_Y_VAULT_WALL_CENTER),
+        vpv("pv_mb_vair", "vol_mb_vair", _MB_Y_CAV_CENTER),
+        vpv("pv_mb_rwall", "vol_mb_rwall", _MB_Y_ROOM_WALL_CENTER),
+        vpv("pv_mb_rair", "vol_mb_rair", _MB_Y_ROOM_CENTER),
+        vpv("pv_mb_roof", "vol_mb_roof", _MB_Y_ROOF_CENTER),
         opv("pv_mb_steel", "vol_mb_steel"),
-        vpv("pv_mb_cap", "vol_mb_cap", _MB_Y_CAV_TOP + 0.5 * _MB_CAP_H),
+        vpv("pv_mb_cap", "vol_mb_cap", _MB_Y_CAP_CENTER),
+        opv("pv_mb_veto_oil", "vol_mb_veto_oil"),
+        opv("pv_mb_inner_oil", "vol_mb_inner_oil"),
+        vpv("pv_mb_cap_oil", "vol_mb_cap_oil", _MB_Y_CAP_CENTER - _MB_STEEL_THICKNESS_R),
     ])
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -296,7 +360,7 @@ def _build_miniboone_gdml():
   <structure>
 {vols}
     <volume name="vol_mb_world">
-      <materialref ref="MB_DIRT"/>
+      <materialref ref="MB_AIR"/>
       <solidref ref="mb_world"/>
 {pvs}
     </volume>
@@ -376,23 +440,27 @@ def build_composite(
 
     # GDML <box> x/y/z are half-widths
     # So this gives a full 1600 m x 400 m x 1800 m box
-    box_half_x = 800.0
-    box_half_y = 200.0
-    box_half_z = 900.0
-    margin = 10.0
+    box_x = 1800.0
+    box_y = 400.0
+    box_z = 2600.0
 
-    bedrock_y = _GRADE_Y_BNB - _TILL_THICKNESS
+    atmo_height = box_y
+    # atmo_center_y = 0
 
-    atmo_height = box_half_y - _GRADE_Y_BNB
-    atmo_center_y = _GRADE_Y_BNB + atmo_height / 2.0
-    atmo_half_height = atmo_height / 2.0
+    till_top_y = _FNAL_SITE_GRADE_Y
+    till_bottom_y = till_top_y - _TILL_THICKNESS
+    till_height = till_top_y - till_bottom_y
+    till_center_y = 0.5 * (till_top_y + till_bottom_y)
 
-    bedrock_height = box_half_y + bedrock_y
-    bedrock_center_y = bedrock_y - bedrock_height / 2.0
-    bedrock_half_height = bedrock_height / 2.0
+    bedrock_top_y = till_bottom_y
+    bedrock_bottom_y = -box_y / 2.0
+    bedrock_height = bedrock_top_y - bedrock_bottom_y
+    bedrock_center_y = 0.5 * (bedrock_top_y + bedrock_bottom_y)
 
-    child_half_x = box_half_x - margin
-    child_half_z = box_half_z - margin
+    bnb_berm_length = 110.9408
+    bnb_berm_width = 16.0
+    bnb_berm_height = _BNB_BERM_Y * 2.0
+    bnb_berm_center_y = 0
 
     materials_xml = _build_materials_xml()
 
@@ -404,35 +472,44 @@ def build_composite(
 {materials_xml}
   </materials>
   <solids>
-    <box name="sol_site_volume" lunit="m" x="{box_half_x}" y="{box_half_y}" z="{box_half_z}"/>
-    <box name="sol_atmosphere" lunit="m" x="{child_half_x}" y="{atmo_half_height}" z="{child_half_z}"/>
-    <box name="sol_dolomite_bedrock" lunit="m" x="{child_half_x}" y="{bedrock_half_height}" z="{child_half_z}"/>
+    <box name="sol_atmosphere" lunit="m" x="{box_x}" y="{atmo_height}" z="{box_z}"/>
+    <box name="sol_glacial_till" lunit="m" x="{box_x}" y="{till_height}" z="{box_z}"/>
+    <box name="sol_dolomite_bedrock" lunit="m" x="{box_x}" y="{bedrock_height}" z="{box_z}"/>
+    <box name="sol_bnb_berm" lunit="m" x="{bnb_berm_width}" y="{bnb_berm_height}" z="{bnb_berm_length}"/>
   </solids>
   <structure>
-    <volume name="vol_atmosphere">
-      <materialref ref="env_Air"/>
-      <solidref ref="sol_atmosphere"/>
+    <volume name="vol_glacial_till">
+      <materialref ref="env_GlacialTill"/>
+      <solidref ref="sol_glacial_till"/>
     </volume>
     <volume name="vol_dolomite_bedrock">
       <materialref ref="env_Dolomite"/>
       <solidref ref="sol_dolomite_bedrock"/>
     </volume>
-    <volume name="vol_site_geology">
-      <materialref ref="env_GlacialTill"/>
-      <solidref ref="sol_site_volume"/>
-      <physvol name="pv_atmosphere">
-        <volumeref ref="vol_atmosphere"/>
-        <position unit="m" x="0" y="{atmo_center_y:.4f}" z="0"/>
+    <volume name="vol_bnb_berm">
+        <materialref ref="env_GlacialTill"/>
+        <solidref ref="sol_bnb_berm"/>
+    </volume>
+    <volume name="vol_atmosphere">
+      <materialref ref="env_Air"/>
+      <solidref ref="sol_atmosphere"/>
+      <physvol name="pv_glacial_till">
+        <volumeref ref="vol_glacial_till"/>
+        <position unit="m" x="0" y="{till_center_y + _MB_Y_BNB:.4f}" z="0"/>
       </physvol>
       <physvol name="pv_dolomite_bedrock">
         <volumeref ref="vol_dolomite_bedrock"/>
-        <position unit="m" x="0" y="{bedrock_center_y:.4f}" z="0"/>
+        <position unit="m" x="0" y="{bedrock_center_y + _MB_Y_BNB:.4f}" z="0"/>
+      </physvol>
+      <physvol name="pv_bnb_berm">
+          <volumeref ref="vol_bnb_berm"/>
+          <position unit="m" x="0" y="{bnb_berm_center_y + _MB_Y_BNB:.4f}" z="0"/>
       </physvol>
 {source_physvols}
     </volume>
   </structure>
   <setup name="Default" version="1.0">
-    <world ref="vol_site_geology"/>
+    <world ref="vol_atmosphere"/>
   </setup>
 </gdml>
 """

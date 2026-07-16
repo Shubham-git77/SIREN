@@ -1077,6 +1077,7 @@ def SaveEvents(events,
                   "parent_idx"]:
             datasets[k].append([])
         # loop over interactions
+        id = -1
         for id, datum in enumerate(event.tree):
             datasets["vertex"][-1].append(np.array(datum.record.interaction_vertex,dtype=float))
 
@@ -1108,6 +1109,7 @@ def SaveEvents(events,
             # secondary particle stuff
             datasets["secondary_types"][-1].append([])
             datasets["secondary_momenta"][-1].append([])
+            isec = -1
             for isec, (sec_type, sec_momenta) in enumerate(zip(datum.record.signature.secondary_types,
                                                                datum.record.secondary_momenta)):
                 datasets["secondary_types"][-1][-1].append(int(sec_type))

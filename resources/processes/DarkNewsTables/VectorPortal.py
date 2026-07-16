@@ -241,28 +241,55 @@ class VectorPortalUpsCase:
                           - m_chi**2 - nuclear_mass**2) / (2.0 * nuclear_mass)
 
     def _dsigma_dQ2(self, E, Q2):
+        """dsigma/dQ2 [cm^2/GeV^2] for chi N -> chi' N, coherent nucleus.
+
+        Implements Dutta et al. (arXiv:2110.11944):
+          - M0_FF : Eq. (B3), fermionic chi/chi', nucleus target
+          - assembly : Eq. (B6), dsigma/dE_N = Q_eff^2/(32 pi M p_chi^2) F^2 |M|^2
+          - |M|^2 = (e^2 g'_2 eps)^2/(Q2 + m_V^2)^2 * M0_FF,  e^2 = 4 pi alpha
+          - Jacobian dE_N/dQ2 = 1/(2M),  with t = -Q2 = 2 M (E_chi' - E_chi)
+          - Q_eff = Z (atomic number) for the coherent dark-photon case.
+        """
         m1 = self.m_chi
         m3 = self.m_chi_prime
-        M = self.MA
+        M  = self.MA
         mV = self.m_V
 
-        s = m1**2 + M**2 + 2.0 * M * E
-        flux_sq = (s - M**2)**2
-        if flux_sq <= 0.0:
+        # lab-frame chi momentum squared (target at rest)
+        pchi2 = E**2 - m1**2
+        if pchi2 <= 0.0:
             return 0.0
 
-        delta_m2 = m3**2 - m1**2
-        numerator = 2.0 * M**2 * (2.0 * E * M - Q2 - delta_m2)
-        if numerator <= 0.0:
+        # recoil kinematics: E_chi' = E_chi - Q2/(2M)
+        E1 = E
+        E3 = E1 - Q2 / (2.0 * M)
+        if E3 <= m3:                       # below chi' threshold for this Q2
             return 0.0
 
+        # --- Eq. (B3): coherent nucleus, fermionic dark matter -------------
+        dm = m3 - m1
+        M0_FF = 8.0 * M * (
+            M**2 * (E3 - E1)
+            + M * (E1**2 + E3**2)
+            - 0.5 * dm**2 * (E3 - E1 + M)
+            + m1**2 * E3
+            - m3**2 * E1
+        )
+        if M0_FF <= 0.0:
+            return 0.0
+
+        # --- |M|^2 with propagator and couplings (t = -Q2) -----------------
+        e2 = 4.0 * math.pi * _ALPHA_EM     # e^2 = 4 pi alpha
         propagator = 1.0 / (Q2 + mV**2)**2
-        M2 = self.g_D**2 * 4.0 * math.pi * _ALPHA_EM * self.epsilon**2 * numerator * propagator
-        F2 = _helm_F2(Q2, self.A)
-        Q_eff_sq = (self.Z * self.epsilon)**2 if self.scattering_regime == "coherent" else 1.0
+        M2 = (e2 * self.g_D * self.epsilon)**2 * propagator * M0_FF
 
-        dsig = M2 * F2 / (16.0 * math.pi * flux_sq)
-        return max(0.0, dsig) * _GEV2_TO_CM2
+        # --- Eq. (B6) assembly, converted from dE_N to dQ2 -----------------
+        #   dsigma/dE_N = Q_eff^2/(32 pi M p_chi^2) F^2(t) |M|^2 ; dE_N/dQ2 = 1/(2M)
+        F2 = _helm_F2(Q2, self.A)
+        Q_eff_sq = self.Z**2 if self.scattering_regime == "coherent" else 1.0
+        dsig_dQ2 = Q_eff_sq / (32.0 * math.pi * M * pchi2) * F2 * M2 / (2.0 * M)
+
+        return max(0.0, dsig_dQ2) * _GEV2_TO_CM2
 
     def diff_xsec_Q2(self, E, Q2):
         return np.array(self._dsigma_dQ2(E, Q2))
@@ -1470,12 +1497,32 @@ def compute_chi_flux(
 ):
     """
     Construct the chi (dark matter) flux at the detector by folding:
-        neutrino flux -> parent meson energy -> three-body BR(meson -> l nu V1)
-        -> V1 -> chi chi' kinematics -> chi energy spectrum.
+        neutrino flux -> parent meson energy -> three-body
+        BR(meson -> l nu V1) [VALIDATED Carlson-Rislow vector ME]
+        -> V1 energy spectrum (3-body) -> V1 -> chi chi -> chi energy.
 
     Returns a siren.distributions.TabulatedFluxDistribution.
+
+    PRODUCTION PHYSICS: uses the validated vector three-body matrix element
+    from MesonProduction (C-R Eq.27, anchored to Dutta-Kim Table II within
+    ~12% across all four channels), NOT the earlier g_ps one-line analytic
+    approximation, and samples the real V1 energy spectrum instead of the
+    delta-function kinematic chain.
     """
     import siren
+    import numpy as _np
+    # Import the sibling MesonProduction.py robustly: the SIREN resource
+    # loader sandboxes module resolution, so a bare 'from MesonProduction
+    # import ...' fails when this file is loaded via _load_local_module.
+    # Load it by absolute file path from the same directory as this file.
+    import importlib.util as _ilu, os as _os
+    _here = _os.path.dirname(_os.path.abspath(__file__))
+    _mp_path = _os.path.join(_here, "MesonProduction.py")
+    _spec = _ilu.spec_from_file_location("MesonProduction_local", _mp_path)
+    _mp = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_mp)
+    MesonThreeBodyDecay = _mp.MesonThreeBodyDecay
+    CALIB_VECTOR = _mp.CALIB_VECTOR
 
     raw_flux = siren.utilities.load_flux(
         "PionKaon",
@@ -1491,23 +1538,48 @@ def compute_chi_flux(
             f"m_V1={m_V1*1e3:.1f} MeV"
         )
 
+    # -- VALIDATED three-body vector production --
+    # g_mu slot is repurposed as the kinetic mixing epsilon (see MesonProduction).
+    decay = MesonThreeBodyDecay(m_meson, m_lepton, m_V1,
+                                g_mu=epsilon, mediator_type="vector")
+    Gamma3 = decay.total_width() * CALIB_VECTOR          # absolute 3-body width
+
+    # SM two-body width Gamma(meson -> l nu) for the BR denominator/normalization
+    import math as _math
+    _GF = 1.16638e-5
+    if abs(m_meson - 0.13957039) < 0.01:
+        f_M, V_Mq = 0.1307, 0.9737
+    else:
+        f_M, V_Mq = 0.1598, 0.2245
+    Gamma2 = (_GF**2 * f_M**2 * V_Mq**2 / (8.0 * _math.pi)
+              * m_meson * m_lepton**2 * (1.0 - m_lepton**2 / m_meson**2)**2)
+
+    # BR(meson -> l nu V1) relative to the two-body rate (this is the
+    # production weight that scales the neutrino flux into a V1 flux).
+    br_ratio = (Gamma3 / Gamma2) if Gamma2 > 0 else 0.0
+
+    # -- V1 energy spectrum in the meson rest frame (3-body) --
+    # Sample E_V over its allowed range, weighted by dGamma/dE_V, so the
+    # chi flux carries the real spectral spread (not a single boosted value).
+    E_V_min = m_V1
+    E_V_max = (m_meson**2 + m_V1**2 - m_lepton**2) / (2.0 * m_meson)
+    n_EV = 24
+    E_V_grid = _np.linspace(E_V_min, E_V_max, n_EV + 1)
+    E_V_mid = 0.5 * (E_V_grid[:-1] + E_V_grid[1:])
+    dGdEV = decay.differential_decay_rate(E_V_mid)       # array, GeV^-1
+    wsum = dGdEV.sum()
+    if wsum <= 0:
+        # fall back to the kinematic endpoint if the spectrum is degenerate
+        E_V_mid = _np.array([(m_meson**2 + m_V1**2 - m_lepton**2)/(2*m_meson)])
+        dGdEV = _np.array([1.0]); wsum = 1.0
+    EV_weights = dGdEV / wsum                            # normalized shape
+
+    # chi energy in the V1 rest frame
+    E_chi_rf = (m_V1**2 + m_chi**2) / (2.0 * m_V1) if m_V1 > 0 else 0.0
+
+    # nu energy -> meson energy mapping (two-body kinematic ratio, as before)
     E_nu_rf = (m_meson**2 - m_lepton**2) / (2.0 * m_meson)
     nu_to_meson = m_meson / E_nu_rf
-
-    alpha_D = g_D**2 / (4.0 * math.pi)
-    x = m_lepton / m_meson
-    y = m_V1 / m_meson
-
-    if (1.0 - x - y) <= 0:
-        br_ratio = 0.0
-    else:
-        num = (1.0 - y**2)**2 * (1.0 + 2.0 * y**2)
-        den = (1.0 - x**2)**2
-        g_ps = num / den if den > 0 else 0.0
-        br_ratio = 2.0 * (alpha_D / _ALPHA_EM) * epsilon**2 * g_ps
-
-    E_chi_rf = (m_V1**2 + m_chi**2) / (2.0 * m_V1) if m_V1 > 0 else 0.0
-    E_V_rest = (m_meson**2 + m_V1**2 - m_lepton**2) / (2.0 * m_meson)
 
     nu_energies = list(raw_flux.GetEnergyNodes())
     chi_energies = []
@@ -1517,25 +1589,30 @@ def compute_chi_flux(
         E_meson = E_nu * nu_to_meson
         if E_meson < m_meson:
             continue
-
         gamma_meson = E_meson / m_meson
-        E_V_lab = gamma_meson * E_V_rest
-
-        gamma_V1 = E_V_lab / m_V1 if m_V1 > 0 else 1.0
-        E_chi = gamma_V1 * E_chi_rf
-
-        if E_chi < min_energy or E_chi > max_energy:
-            continue
+        beta_meson = _math.sqrt(max(1.0 - 1.0/gamma_meson**2, 0.0))
 
         nu_flux_at_E = raw_flux.SamplePDF(E_nu)
-        chi_flux_at_E = nu_flux_at_E * br_ratio * 0.5
+        flux_weight = nu_flux_at_E * br_ratio * 0.5      # 0.5 = BR(V1->chichi)
 
-        chi_energies.append(E_chi)
-        chi_flux_vals.append(chi_flux_at_E)
+        # spread over the V1 energy spectrum -> chi energy spectrum
+        for E_V_rest, w_EV in zip(E_V_mid, EV_weights):
+            E_V_lab = gamma_meson * E_V_rest             # (collinear approx, as before)
+            gamma_V1 = E_V_lab / m_V1 if m_V1 > 0 else 1.0
+            E_chi = gamma_V1 * E_chi_rf
+            if E_chi < min_energy or E_chi > max_energy:
+                continue
+            chi_energies.append(E_chi)
+            chi_flux_vals.append(flux_weight * w_EV)
 
     if not chi_energies:
         chi_energies = [min_energy, max_energy]
         chi_flux_vals = [0.0, 0.0]
+
+    # sort by energy (TabulatedFluxDistribution expects ordered nodes)
+    order = _np.argsort(chi_energies)
+    chi_energies = list(_np.array(chi_energies)[order])
+    chi_flux_vals = list(_np.array(chi_flux_vals)[order])
 
     return siren.distributions.TabulatedFluxDistribution(
         min_energy, max_energy, chi_energies, chi_flux_vals, physically_normalized
