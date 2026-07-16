@@ -923,7 +923,7 @@ double DetectorModel::GetInteractionDensity(Geometry::IntersectionList const & i
             std::vector<double> const & total_cross_sections,
             double const & total_decay_length) const {
     Vector3D direction = p0 - intersections.position;
-    if(direction.magnitude() == 0) {
+    if(direction.magnitude() <= distance_threshold) {
         direction = intersections.direction;
     } else {
         direction.normalize();
@@ -1220,6 +1220,7 @@ double DetectorModel::GetInteractionDepthInCGS(Geometry::IntersectionList const 
         std::vector<siren::dataclasses::ParticleType> const & targets,
         std::vector<double> const & total_cross_sections,
         double const & total_decay_length) const {
+
     if(p0 == p1) {
         return 0.0;
     }
@@ -1232,8 +1233,8 @@ double DetectorModel::GetInteractionDepthInCGS(Geometry::IntersectionList const 
     if(targets.empty()) {
       return distance / total_decay_length; // m / m --> dimensionless
     }
-    if(distance == 0.0) {
-        return 0.0;
+    if(distance <= distance_threshold) {
+        return distance / total_decay_length;
     }
     direction.normalize();
 
@@ -2212,7 +2213,7 @@ void DetectorModel::LoadConcentricShellsFromLegacyFile(std::string model_fname, 
     double radius, param;
     int nparams;
 
-    int level = -sectors_.size();
+    int level = -static_cast<int>(sectors_.size());
     double max_radius = 0;
     while(getline(in,buf)) {
         {
@@ -2285,14 +2286,17 @@ void DetectorModel::LoadConcentricShellsFromLegacyFile(std::string model_fname, 
         saw_ice |= in_ice;
 
         if(not saw_ice) {
-            // In the Earth, keep increasing the radius
-            if(solid)
-                earth_radius = ((Sphere *)(sector.geo.get()))->GetRadius();
+            if(solid) {
+                auto const * sp = dynamic_cast<Sphere const *>(sector.geo.get());
+                if(sp) earth_radius = sp->GetRadius();
+            }
         }
         else if(in_ice) {
-            // In the ice, keep increasing the radius
-            ice_radius = ((Sphere *)(sector.geo.get()))->GetRadius();
-            ice_layers.push_back(i);
+            auto const * sp = dynamic_cast<Sphere const *>(sector.geo.get());
+            if(sp) {
+                ice_radius = sp->GetRadius();
+                ice_layers.push_back(i);
+            }
         }
         else {
             // Out of the ice, stop counting layers
