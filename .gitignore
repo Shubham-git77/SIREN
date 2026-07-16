@@ -77,3 +77,8 @@ resources/processes/**/*fits
 # download cache and extraction sentinels
 .download_cache/
 .zenodo_extracted
+
+# Local data / artifacts — do not commit
+*.root
+*.root:Zone.Identifier
+*:Zone.Identifier
