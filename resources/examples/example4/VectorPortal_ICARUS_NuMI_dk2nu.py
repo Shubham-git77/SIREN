@@ -1,25 +1,29 @@
 """
-VectorPortal_ICARUS_NuMI_dk2nu.py — Dutta-Kim vector-portal K+ chain at
-ICARUS driven by the REAL NuMI beam simulation (g4numi dk2nu).
+Dutta-Kim vector-portal K+ chain at ICARUS from the REAL NuMI beam
+simulation (g4numi dk2nu), in spec form.
 
-This is the NuMI counterpart of VectorPortal_SBND_fullchain.py (whose
-channel machinery it reuses): kaon kinematics are read from g4numi dk2nu
-files, whose vertices/momenta are expressed in NuMI beam coordinates
-(origin at MCZERO, z along the NuMI axis).  They are transformed into the
-SIREN world frame (BNB) with sbn_geometry.transform("NuMI", "BNB") — the
-ICARUS-NuMI rotation/translation from icaruscode GNuMIFlux.xml, confirmed
-by SBN DocDB 22998-v2 — via the Dk2nuReader beam_transform hook, and
-injected through the composite SBN geometry (BNB + NuMI beamlines +
-ICARUS detector, all in BNB coordinates).
+On-shell chain (5 vertices):
 
-Flux files (Austin Schneider, "SBN Global Fits" Drive folder / g4numi):
+    K+ -> e+ nu_e V1;   V1 -> chi chi;   chi Ar -> chi' Ar;
+    chi' -> chi V1_sig;   V1_sig -> e+ e-
+
+The kaon kinematics come from g4numi dk2nu files whose vertices and
+momenta are expressed in NuMI beam coordinates (origin at MCZERO, z along
+the NuMI axis).  They are mapped into the SIREN world frame (BNB) with
+sbn_geometry.transform("NuMI", "BNB") — the ICARUS-NuMI rotation and
+translation from icaruscode GNuMIFlux.xml, confirmed by SBN DocDB
+22998-v2 — through the Dk2nuReader beam_transform hook, and injected via
+PrimaryExternalDistribution through the composite SBN geometry
+(BNB + NuMI beamlines + ICARUS detector, all in BNB coordinates).
+
+Flux files (g4numi, medium-energy target, RHC / antineutrino mode,
+1e6 POT and ~15k K+ decays per file):
   g4numiNone_downstream_me000z-200i_rhc_2001-2005.root
-  medium-energy target, -200 kA horns = RHC (antineutrino mode),
-  1e6 POT per file, ~15k K+ decays per file.
+Set NUMI_DK2NU_GLOB to point elsewhere.
 
 Usage:
-  python VectorPortal_ICARUS_NuMI_dk2nu.py --n-events 2000
-  python VectorPortal_ICARUS_NuMI_dk2nu.py --channel K_mu --n-events 10000
+    python VectorPortal_ICARUS_NuMI_dk2nu.py [--events N] [--seed S]
+        [--n-files K] [--tune]
 """
 
 import argparse
@@ -29,123 +33,227 @@ import os
 import numpy as np
 
 import siren
-from siren import _util
+from siren import _util, channels, dataclasses, distributions, expand
+from siren.Injector import Injector
+from siren.Weighter import Weighter
 
+_PROC = os.path.join(_util.resource_package_dir(), "processes", "DarkNewsTables")
+_MESON = _util.load_module("DuttaKim_MesonProduction",
+                           os.path.join(_PROC, "MesonProduction.py"))
+_VP = _util.load_module("DuttaKim_VectorPortal",
+                        os.path.join(_PROC, "VectorPortal.py"))
+_DK = _util.load_module("DuttaKim_Dk2nuReader",
+                        os.path.join(_PROC, "Dk2nuReader.py"))
+_GEO = _util.load_module("sbn_geometry",
+                         os.path.join(_util.resource_package_dir(),
+                                      "detectors", "SBN", "SBN-v1",
+                                      "sbn_geometry.py"))
+
+# ---------------------------------------------------------------------- #
+#  Model parameters (Dutta-Kim Table I/II, double-mediator)                #
+# ---------------------------------------------------------------------- #
+M_KAON = 0.49368
+M_ELEC = 0.000511
+M_CHI, M_CHI_PRIME = 8e-3, 50e-3
+M_V1, M_V2 = 17e-3, 200e-3
+M_ARGON40 = 37.215
+G_D, EPSILON_1, EPSILON_2, G_MU = 1.0, 7e-5, 1e-4, 1e-3
+
+# PDG K+ total width (tau = 1.238e-8 s) for the BSM branching ratio.
+GAMMA_KAON_SM = 5.3167e-17
+
+KAON = dataclasses.Particle.ParticleType(321)
+V1_PROD = siren.particles.define("V1_prod", 5922, M_V1)
+CHI = siren.particles.define("chi", 5917, M_CHI)
+CHI_PRIME = siren.particles.define("chi_prime", 5918, M_CHI_PRIME)
+V1_SIG = siren.particles.define("V1_sig", 5923, M_V1)
+
+# ---------------------------------------------------------------------- #
+#  NuMI flux                                                               #
+# ---------------------------------------------------------------------- #
 _EX4 = os.path.dirname(os.path.realpath(__file__))
-
-# Reuse the validated SBND full-chain machinery (models, phase spaces,
-# injector loop, cuts); everything detector/beam-specific is overridden
-# below through module attributes.
-fc = _util.load_module(
-    "VP_SBND_fullchain", os.path.join(_EX4, "VectorPortal_SBND_fullchain.py"))
-_DK = fc._DK
-
-geo = _util.load_module(
-    "sbn_geometry",
-    os.path.join(_util.resource_package_dir(),
-                 "detectors", "SBN", "SBN-v1", "sbn_geometry.py"))
-
-# ------------------------------------------------------------------ #
-#  NuMI flux files                                                     #
-# ------------------------------------------------------------------ #
 NUMI_GLOB = os.environ.get(
     "NUMI_DK2NU_GLOB", os.path.join(_EX4, "sources", "NuMI", "g4numi*.root"))
-NUMI_FILES = sorted(glob.glob(NUMI_GLOB))
 
-# ICARUS NuMI exposure. PLACEHOLDER at the SBN-proposal scale — set
-# ICARUS_NUMI_POT in the environment for a real projection.
-ICARUS_NUMI_POT = float(os.environ.get("ICARUS_NUMI_POT", 3.0e21))
-
-# ------------------------------------------------------------------ #
-#  ICARUS overrides of the SBND-shaped module constants                #
-# ------------------------------------------------------------------ #
-# Active LAr envelope from sbn_geometry.DETECTORS["ICARUS"]:
-#   x: +/-3.60 m,  y: -0.202 +/- 1.58 m,  z: +/-8.975 m
-# (detector frame is centered on the LAr geometric center, so the box is
-# origin-centered in detector coordinates).
-fc._TPC_BOX_X = 7.20     # full width  [m]
-fc._TPC_BOX_Y = 3.16     # full height [m]
-fc._TPC_BOX_Z = 17.95    # full length [m]
-# Sphere enclosing the farthest active-volume corner (~9.80 m).
-fc.R_LAR_INJECT = 10.5
-fc.SBND_POT = ICARUS_NUMI_POT   # folded into w_abs by run_channel
-
-# NuMI beam frame -> BNB (SIREN world) rigid transform.
-T_NUMI_TO_BNB = geo.transform("NuMI", "BNB")
+# NuMI beam frame -> BNB (SIREN world frame).
+T_NUMI_TO_BNB = _GEO.transform("NuMI", "BNB")
 
 
-def load_numi_mesons(dk2nu_data, parent_pdg, detector_model, upscatter=None):
-    """NuMI version of fc.load_dk2nu_mesons: identical sampling bias
-    (sigma(E) * max(cos,0), evaluated in the raw NuMI beam frame where
-    "forward" means along the NuMI axis), plus the NuMI->BNB transform."""
-    sigma_fn = (fc._build_sigma_interp(upscatter)
-                if upscatter is not None else None)
-    return _DK.dk2nu_to_primary_distribution(
-        dk2nu_data, detector_model, parent_pdg=parent_pdg,
-        sampling_bias=fc.make_meson_bias(sigma_fn),
-        flux_weighted_sampling=True,
-        beam_transform=T_NUMI_TO_BNB)
+def build_onshell_models():
+    """Physics models for the on-shell K+ chain (vector production)."""
+    kaon_decay = _MESON.MesonThreeBodySIRENDecay(
+        M_KAON, M_ELEC, M_V1, G_MU, "vector",
+        pdgid_meson=321, pdgid_lepton=-11,
+        pdgid_neutrino=12, pdgid_mediator=5922)
+    v1_to_chi = _VP.DarkPhotonToChiDecay(
+        M_V1, M_CHI, G_D, pdgid_V1=5922, pdgid_chi=5917)
+    upscatter = _VP.VectorPortalUpscatteringXS(
+        M_CHI, M_CHI_PRIME, M_V2, G_D, EPSILON_2,
+        pdgid_chi=5917, pdgid_chi_prime=5918,
+        nuclear_pdgid=1000180400, nuclear_mass=M_ARGON40, A=40, Z=18)
+    chi_prime_decay = _VP.ChiPrimeDecay(
+        M_CHI, M_CHI_PRIME, M_V1, G_D,
+        pdgid_chi_prime=5918, pdgid_chi=5917, pdgid_V1=5923)
+    visible_decay = _VP.DarkPhotonDecay(M_V1, EPSILON_1, pdgid_V1=5923)
+    return {
+        "kaon_decay": kaon_decay,
+        "models": {
+            "v1_to_chi": v1_to_chi,
+            "upscatter": upscatter,
+            "chi_prime_decay": chi_prime_decay,
+            "visible_decay": visible_decay,
+        },
+    }
 
 
-# run_channel resolves load_dk2nu_mesons from its module globals.
-fc.load_dk2nu_mesons = load_numi_mesons
+def build_sX_cdf(meson_decay, n_nodes=257):
+    """CDF of the physical s_X = M^2(l, nu) marginal for the directed
+    primary channel's pair-mass proposal (exact for any masses)."""
+    d = meson_decay._decay
+    s_min, s_max = d.m_l ** 2, (d.m_M - d.m_phi) ** 2
+    eps = 1e-9 * (s_max - s_min)
+    s = np.linspace(s_min + eps, s_max - eps, n_nodes)
+    E_V1 = (d.m_M ** 2 + d.m_phi ** 2 - s) / (2.0 * d.m_M)
+    dens = np.clip(np.asarray(d.differential_decay_rate(E_V1), float), 0.0, None)
+    cdf = np.concatenate([[0.0], np.cumsum(0.5 * (dens[1:] + dens[:-1]) * np.diff(s))])
+    return s.tolist(), cdf.tolist()
+
+
+def numi_kaon_bias(sigma_fn=None):
+    """Importance shape for the dk2nu K+ sample, evaluated in the RAW NuMI
+    beam frame (before beam_transform): forward along the NuMI axis, times
+    the upscatter cross-section trend when available."""
+    def bias(E, px, py, pz, vx, vy, vz):
+        p = np.sqrt(px ** 2 + py ** 2 + pz ** 2)
+        cos_theta = np.divide(pz, p, out=np.zeros_like(p), where=(p > 0))
+        fwd = np.maximum(cos_theta, 0.0)
+        if sigma_fn is None:
+            return fwd
+        return sigma_fn(np.asarray(E, dtype=float)) * fwd
+    return bias
+
+
+def build_sigma_interp(upscatter, e_lo=0.06, e_hi=10.0, n=120):
+    grid = np.linspace(e_lo, e_hi, n)
+    sg = np.array([upscatter._ups.total_xsec(float(e)) for e in grid])
+    smax = float(np.max(sg))
+    if smax > 0:
+        sg = sg / smax
+
+    def sigma_fn(E):
+        return np.interp(np.clip(E, e_lo, e_hi), grid, sg)
+    return sigma_fn
+
+
+def build_vertices(models, fiducial, meson_dist, br_bsm):
+    """The chain as spec-form Vertex objects with channels algebra.
+
+    The primary kaon comes from the dk2nu external distribution (position
+    and 4-momentum fixed by the beam simulation, already transformed into
+    the world frame), so the primary Vertex carries no synthetic energy/
+    direction/position distributions and uses Fixed vertex weighting."""
+    m = models["models"]
+    sx = channels.PairMass.tabulated(*build_sX_cdf(models["kaon_decay"]))
+    sv = distributions.SecondaryPhysicalVertexDistribution
+
+    primary = siren.Vertex(
+        KAON, models["kaon_decay"],
+        distributions=[meson_dist],
+        physical=[meson_dist,
+                  distributions.NormalizationConstant(br_bsm)],
+        weighting=siren.Fixed(),
+        kinematics=0.98 * channels.toward_3body("V1_prod", fiducial,
+                                                strategy="direct", pair_mass=sx)
+                   + 0.02 * channels.physical(),
+        expand=(expand.child("V1_prod"),))
+
+    v1 = siren.Vertex(
+        "V1_prod", m["v1_to_chi"], position=sv(),
+        kinematics=0.98 * channels.toward(0, fiducial)
+                   + 0.02 * channels.physical(),
+        expand=(expand.child("chi", index=0),))
+
+    chi = siren.Vertex(
+        "chi", m["upscatter"],
+        position=distributions.SecondaryBoundedVertexDistribution(fiducial),
+        kinematics=channels.physical(),
+        expand=(expand.child("chi_prime"),))
+
+    chip = siren.Vertex(
+        "chi_prime", m["chi_prime_decay"], position=sv(),
+        kinematics=channels.physical(),
+        expand=(expand.child("V1_sig"),))
+
+    v1s = siren.Vertex(
+        "V1_sig", m["visible_decay"], position=sv(),
+        kinematics=0.5 * channels.physical() + 0.5 * channels.isotropic(0),
+        expand=(expand.depth_below(0),))  # terminal: e+ e- are final
+
+    return primary, (v1, chi, chip, v1s)
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--channel", choices=list(fc.CHANNELS) + ["all"],
-                    default="K_e")
-    ap.add_argument("--n-events", type=int, default=2000)
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--events", type=int, default=500)
+    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--n-files", type=int, default=1,
                     help="how many g4numi files to read")
-    ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--tune", action="store_true",
+                    help="Kleiss-Pittau channel-weight tuning before production")
     args = ap.parse_args()
 
-    if not NUMI_FILES:
+    files = sorted(glob.glob(NUMI_GLOB))[:args.n_files]
+    if not files:
         raise SystemExit("No NuMI dk2nu files match %s" % NUMI_GLOB)
-    files = NUMI_FILES[:args.n_files]
 
+    c_num = _GEO.detector_center("ICARUS", "NuMI")
     print("NuMI -> BNB transform (GNuMIFlux.xml / DocDB 22998-v2):")
-    print("  MCZERO in BNB frame: %s m" % np.round(T_NUMI_TO_BNB.t, 3))
+    print("  MCZERO in BNB frame : %s m" % np.round(T_NUMI_TO_BNB.t, 3))
     print("  ICARUS in NuMI frame: %s m  (baseline %.1f m, off-axis %.2f deg)"
-          % (np.round(geo.detector_center("ICARUS", "NuMI"), 2),
-             np.linalg.norm(geo.detector_center("ICARUS", "NuMI")),
-             np.degrees(np.arccos(
-                 geo.detector_center("ICARUS", "NuMI")[2]
-                 / np.linalg.norm(geo.detector_center("ICARUS", "NuMI"))))))
+          % (np.round(c_num, 2), np.linalg.norm(c_num),
+             np.degrees(np.arccos(c_num[2] / np.linalg.norm(c_num)))))
 
     print("\nLoading composite ICARUS model (BNB + NuMI beamlines + detector) ...")
-    detector_model = siren.utilities.load_detector("SBN", detector="ICARUS")
+    detector = siren.utilities.load_detector("SBN", detector="ICARUS")
+
+    # ICARUS active LAr envelope (sbn_geometry.DETECTORS["ICARUS"]):
+    # x +/-3.60 m, y +/-1.58 m, z +/-8.975 m about the detector origin.
+    fiducial = siren.geometry.Box(widths=(7.20, 3.16, 17.95))
 
     print("Reading NuMI dk2nu: %d file(s)" % len(files))
-    dk2nu_data = _DK.read_dk2nu(files)
-    try:
-        _DK.print_summary(dk2nu_data)
-    except Exception:
-        pass
+    dk2nu_data = _DK.read_dk2nu(files, parent_pdg=[321])
+    _DK.print_summary(dk2nu_data)
 
-    names = list(fc.CHANNELS) if args.channel == "all" else [args.channel]
-    per_channel = {}
-    for name in names:
-        per_channel[name] = fc.run_channel(
-            name, dk2nu_data, detector_model, args.n_events, debug=args.debug)
+    models = build_onshell_models()
+    br_bsm = models["kaon_decay"]._total_width / GAMMA_KAON_SM
+    print("  BSM 3-body width: %.4e GeV   BR(K+ -> e nu V1): %.4e"
+          % (models["kaon_decay"]._total_width, br_bsm))
 
-    print("\n" + "=" * 64)
-    print("  ICARUS x NuMI (RHC)  —  Vector Portal (full chain)")
-    print("  POT: %.2e   files: %d" % (ICARUS_NUMI_POT, len(files)))
-    print("=" * 64)
-    for n in per_channel:
-        Ev, cs, wv = per_channel[n]
-        print("  %-6s : %4d events   sum(w)=%.3e"
-              % (n, len(Ev), wv.sum() if len(wv) else 0.0))
+    sigma_fn = build_sigma_interp(models["models"]["upscatter"])
+    meson_dist = _DK.dk2nu_to_primary_distribution(
+        dk2nu_data, detector, parent_pdg=[321],
+        sampling_bias=numi_kaon_bias(sigma_fn),
+        flux_weighted_sampling=True,
+        beam_transform=T_NUMI_TO_BNB)
+    print("  Loaded %d kaon entries into PrimaryExternalDistribution"
+          % meson_dist.GetPhysicalNumEvents())
 
-    os.makedirs(os.path.join(_EX4, "output"), exist_ok=True)
-    stem = os.path.join(_EX4, "output", "ICARUS_VectorPortal_NuMI_dk2nu")
-    np.savez(stem + "_observables.npz",
-             **{f"{n}_E": per_channel[n][0] for n in per_channel},
-             **{f"{n}_c": per_channel[n][1] for n in per_channel},
-             **{f"{n}_w": per_channel[n][2] for n in per_channel})
-    print("  Saved -> %s_observables.npz" % stem)
+    primary, secondaries = build_vertices(models, fiducial, meson_dist, br_bsm)
+
+    injector = Injector(detector=detector, primary=primary,
+                        secondaries=secondaries,
+                        events=args.events, seed=args.seed)
+    weighter = Weighter(injector, primary_physical=primary.physical)
+
+    if args.tune:
+        print(siren.tune.tune(injector, weighter, events=200, rounds=3))
+        injector.reset()
+
+    results = siren.generate(injector, weighter,
+                             events=args.events, on_shortfall="warn")
+    results.summary()
+    print(results.variance_report())
+    print(injector.report())
 
 
 if __name__ == "__main__":
