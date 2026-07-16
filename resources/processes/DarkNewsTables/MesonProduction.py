@@ -191,6 +191,35 @@ def _matel_sq_pseudo(E_nu, E_phi, m_M, m_l, m_phi, C2):
     return max(C2 * T_P / D**2, 0.0)
 
 
+def _matel_sq_vector(E_nu, E_phi, m_M, m_l, m_phi, C2):
+    """
+    Spin-summed |M|^2 for vector coupling (dark photon radiated off the
+    charged-lepton leg, C_V = g, C_A = 0).
+
+    Carlson & Rislow, Phys.Rev.D 86, 035013 (2012).  The Dalitz-plane body
+    mirrors VectorPortal._vector_meson_matel_sq_bare (settled against
+    explicit Dirac spinor sums to 1e-15), which returns 2 B / D^2 for
+    (G_F f_M V C_V)^2 = 1.  With C2 = (G_F f_M V g)^2 / 4 the full
+    |M|^2 = 4 C2 * (2 B / D^2).
+    """
+    Q2 = m_M**2 - 2.0 * m_M * E_nu
+    D = Q2 - m_l**2
+    if D <= 0.0:
+        return 0.0
+    E_l = m_M - E_nu - E_phi
+    L = Q2**2 - m_l**2 * m_M**2
+    B = (4.0 * m_l**2 * m_M**2 * E_l * E_nu
+         - 12.0 * m_l**2 * m_M * Q2 * E_nu
+         + L * (m_M**2 + m_phi**2 - m_l**2 - 2.0 * m_M * E_phi)
+         + (1.0 / m_phi**2)
+         * (m_M**2 - m_phi**2 - m_l**2 - 2.0 * m_M * E_nu)
+         * (4.0 * m_l**2 * m_M**2 * E_phi * E_nu
+            + L * (m_M**2 - m_phi**2 + m_l**2 - 2.0 * m_M * E_l)))
+    if B < 0.0:
+        return 0.0
+    return 4.0 * C2 * 2.0 * B / D**2
+
+
 # ===================================================================
 #  MesonThreeBodyDecay  --  pi/K -> l nu phi
 # ===================================================================
@@ -245,6 +274,8 @@ class MesonThreeBodyDecay:
             return _matel_sq_scalar(E_nu, E_phi, self.m_M, self.m_l, self.m_phi, self._C2)
         elif self.mediator_type == "pseudoscalar":
             return _matel_sq_pseudo(E_nu, E_phi, self.m_M, self.m_l, self.m_phi, self._C2)
+        elif self.mediator_type == "vector":
+            return _matel_sq_vector(E_nu, E_phi, self.m_M, self.m_l, self.m_phi, self._C2)
         raise ValueError(f"Unknown mediator_type: {self.mediator_type}")
 
     def _E_phi_limits(self, E_nu):
