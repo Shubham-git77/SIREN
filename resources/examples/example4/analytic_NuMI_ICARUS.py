@@ -33,7 +33,8 @@ import numpy as np
 from siren import _util
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SA = _util.load_module("sbnd_analytic", os.path.join(HERE, "sbnd_analytic.py"))
+SA = _util.load_module("AnalyticRate", os.path.join(
+    _util.resource_package_dir(), "processes", "DarkNewsTables", "AnalyticRate.py"))
 # reuse the single-photon helpers (Primakoff opening-angle smearing) used by the
 # BNB ICARUS/SBND analytic plotters.
 from plot_sbnd_analytic import (smear_photon_beam, _get_primakoff, COLORS,
@@ -63,41 +64,17 @@ NUMI_FILES = ([os.environ["NUMI_DK2NU_FILE"]] if os.environ.get("NUMI_DK2NU_FILE
               else sorted(glob.glob(_glob)))
 ICARUS_NUMI_POT = float(os.environ.get("ICARUS_NUMI_POT", "3.0e21"))
 
-_NUMI_CACHE = {}
-
-
-_NMAX = int(os.environ.get("NUMI_NMAX", "120000"))   # parents/species cap (raise to use 5-file stats)
+_NMAX = int(os.environ.get("NUMI_NMAX", "120000"))   # parents/species cap (raise to use multi-file stats)
 
 
 def numi_meson_fn(S, pdg, n_max=None, seed=42):
-    if n_max is None:
-        n_max = _NMAX
     """meson_fn for the analytic engine: g4numi parents in the BNB world frame.
 
-    Mirrors sbnd_analytic._mesons_dk2nu but (a) reads ALL NuMI files (POT summed)
-    and (b) applies the NuMI->BNB transform to vertices (cm->m then R r + t) and
-    momenta (R p). Returns (E[GeV], |p|, dir[N,3], vertex[N,3] m BNB, w=nimpwt/POT)."""
-    key = tuple(NUMI_FILES)
-    if key not in _NUMI_CACHE:
-        _NUMI_CACHE[key] = S._DK.read_dk2nu(list(NUMI_FILES))
-    d = _NUMI_CACHE[key]
-    pot_tot = float(d["pot"])
-    isp = d["ptype"] == pdg
-    E = d["E"][isp]
-    px, py, pz = d["px"][isp], d["py"][isp], d["pz"][isp]
-    vx, vy, vz = d["vx"][isp], d["vy"][isp], d["vz"][isp]
-    w = d["nimpwt"][isp] / pot_tot
-    M = len(E)
-    if M > n_max:
-        idx = np.random.default_rng(seed).choice(M, n_max, replace=False)
-        E, px, py, pz, vx, vy, vz = (a[idx] for a in (E, px, py, pz, vx, vy, vz))
-        w = w[idx] * (M / n_max)
-    pos = _R @ (np.stack([vx, vy, vz]) * 0.01) + _t[:, None]   # (3, N) m, BNB
-    mom = _R @ np.stack([px, py, pz])                          # (3, N) GeV, BNB
-    v, p = pos.T, mom.T
-    pmag = np.linalg.norm(p, axis=1)
-    ok = (pmag > 0) & np.isfinite(E)
-    return E[ok], pmag[ok], p[ok] / pmag[ok, None], v[ok], w[ok]
+    Thin wrapper over Dk2nuReader.analytic_meson_source: reads ALL NuMI files
+    (POT summed, cached) and applies the NuMI->BNB transform (T) to vertices and
+    momenta. The flux-read + transform now live in the DarkNewsTables package."""
+    return S._DK.analytic_meson_source(
+        NUMI_FILES, pdg, beam_transform=T, n_max=(_NMAX if n_max is None else n_max), seed=seed)
 
 
 def run_portal(key, n_dec, eff, anchored, muon_only=True):

@@ -3,7 +3,7 @@ import os, time
 import numpy as np
 os.environ.setdefault("DK2NU_FILE", "/home/shubham/nubeamHighSample.dk2nu.root")
 from siren import _util
-SA = _util.load_module("sa", "sbnd_analytic.py")
+SA = _util.load_module("AnalyticRate", os.path.join(_util.resource_package_dir(), "processes", "DarkNewsTables", "AnalyticRate.py"))
 S = _util.load_module("MBv", "VectorPortal_MiniBooNE_fullchain.py")
 WIN = (0.140, 0.300)
 

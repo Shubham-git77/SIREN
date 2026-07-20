@@ -436,3 +436,47 @@ class DarkPrimakoffUpsCase(_CrossSection):
                 sec.four_momentum = P_N
                 sec.mass = M
         return
+
+
+# ---------------------------------------------------------------------------
+# Outgoing-photon angle from the dark-Primakoff scatter (analytic-rate helper)
+# ---------------------------------------------------------------------------
+def sample_cos_star(dp, E, rng, nE=48, nt=160):
+    """Vectorised sample of the Primakoff opening angle cos(theta*) (photon wrt
+    the incoming mediator phi) from dsigma/dt, binned in E_phi.  For a massless
+    outgoing photon, cos(theta*) ~ 1 + t/(2 E^2).  dp is a DarkPrimakoffUpsCase's
+    _dp (this module's differential-cross-section object)."""
+    E = np.asarray(E, float)
+    out = np.ones_like(E)
+    if E.size == 0:
+        return out
+    edges = np.linspace(E.min(), E.max() + 1e-9, nE + 1)
+    idx = np.clip(np.digitize(E, edges) - 1, 0, nE - 1)
+    for b in range(nE):
+        m = idx == b
+        if not m.any():
+            continue
+        Eb = 0.5 * (edges[b] + edges[b + 1])
+        s = dp.m_phi ** 2 + dp.MA ** 2 + 2.0 * dp.MA * Eb
+        tlo, thi = dp._t_range(s)
+        if tlo is None or thi <= tlo:
+            continue
+        ts = np.linspace(tlo, thi, nt)
+        w = np.array([dp._dsigma_dt(s, t) for t in ts])
+        if w.sum() <= 0:
+            continue
+        cdf = np.cumsum(w); cdf /= cdf[-1]
+        tsamp = np.interp(rng.random(int(m.sum())), cdf, ts)
+        out[m] = np.clip(1.0 + tsamp / (2.0 * Eb * Eb), -1.0, 1.0)
+    return out
+
+
+def smear_photon_beam(cos_med, E, dp, rng):
+    """Rotate the mediator direction (cos_med wrt beam) by the sampled Primakoff
+    opening angle to get the outgoing-photon cos(theta) wrt the beam."""
+    cstar = sample_cos_star(dp, E, rng)
+    th_med = np.arccos(np.clip(cos_med, -1.0, 1.0))
+    th_star = np.arccos(np.clip(cstar, -1.0, 1.0))
+    psi = rng.uniform(0.0, 2.0 * np.pi, size=E.shape)
+    return np.clip(np.cos(th_med) * np.cos(th_star)
+                   + np.sin(th_med) * np.sin(th_star) * np.cos(psi), -1.0, 1.0)

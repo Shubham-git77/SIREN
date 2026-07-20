@@ -544,3 +544,51 @@ def print_summary(dk2nu_data):
         E = dk2nu_data["E"][ptypes == pdg]
         print(f"  {name:>5s} ({int(pdg):>4d}): {count:>7d} ({frac:5.1f}%)  "
               f"E = [{E.min():.3f}, {E.max():.3f}] GeV")
+
+
+_ANALYTIC_MESON_CACHE = {}
+
+
+def analytic_meson_source(files, pdg, beam_transform=None, n_max=120000, seed=42):
+    """Parent-meson kinematics for the analytic sigma*N*chord engine.
+
+    Reads one or more dk2nu files (POT summed, cached) and returns the tuple
+    (E[GeV], |p|[GeV], dir[N,3], vertex[N,3] in METRES, w) the analytic engine
+    consumes, where w = nimpwt / POT_simulated (mesons per POT).
+
+    If beam_transform is given -- a rigid Transform with .R (3x3) and .t (metres),
+    e.g. sbn_geometry.transform("NuMI", "BNB") -- the decay vertices (cm->m) and
+    parent momenta are mapped into the SIREN world (BNB) frame:
+    r_world = R r + t, p_world = R p. Needed for g4numi NuMI files (NuMI beam
+    coordinates); omit for BNB g4bnb files (already in the world frame).
+
+    Large species are sub-sampled to n_max parents with an unbiased M/n weight
+    rescale so the per-POT normalization is preserved.
+    """
+    key = tuple(files) if isinstance(files, (list, tuple)) else (files,)
+    if key not in _ANALYTIC_MESON_CACHE:
+        _ANALYTIC_MESON_CACHE[key] = read_dk2nu(list(key))
+    d = _ANALYTIC_MESON_CACHE[key]
+    pot = float(d["pot"])
+    isp = d["ptype"] == pdg
+    E = d["E"][isp]
+    px, py, pz = d["px"][isp], d["py"][isp], d["pz"][isp]
+    vx, vy, vz = d["vx"][isp], d["vy"][isp], d["vz"][isp]
+    w = d["nimpwt"][isp] / pot
+    M = len(E)
+    if M > n_max:
+        idx = np.random.default_rng(seed).choice(M, n_max, replace=False)
+        E, px, py, pz, vx, vy, vz = (a[idx] for a in (E, px, py, pz, vx, vy, vz))
+        w = w[idx] * (M / n_max)
+    if beam_transform is not None:
+        R = np.asarray(beam_transform.R, dtype=float)
+        t = np.asarray(beam_transform.t, dtype=float)
+        pos = R @ (np.stack([vx, vy, vz]) * 0.01) + t[:, None]   # (3,N) m, world
+        mom = R @ np.stack([px, py, pz])                         # (3,N) GeV, world
+        v, p = pos.T, mom.T
+    else:
+        v = np.stack([vx, vy, vz], axis=1) * 0.01
+        p = np.stack([px, py, pz], axis=1)
+    pmag = np.linalg.norm(p, axis=1)
+    ok = (pmag > 0) & np.isfinite(E)
+    return E[ok], pmag[ok], p[ok] / pmag[ok, None], v[ok], w[ok]

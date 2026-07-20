@@ -30,7 +30,9 @@ import matplotlib.pyplot as plt
 
 os.environ.setdefault("DK2NU_FILE", "/home/shubham/nubeam12M.dk2nu.root")
 
-import sbnd_analytic as SA
+from siren import _util as _su
+import os as _os
+SA = _su.load_module("AnalyticRate", _os.path.join(_su.resource_package_dir(), "processes", "DarkNewsTables", "AnalyticRate.py"))
 # reuse the SBND plotter's helpers + the SAME MiniBooNE anchor machinery
 # (import-safe: plot_sbnd_analytic is main-guarded).
 from plot_sbnd_analytic import (smear_photon_beam, _get_primakoff, COLORS,

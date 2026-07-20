@@ -18,7 +18,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-import sbnd_analytic as SA
+from siren import _util as _su
+import os as _os
+SA = _su.load_module("AnalyticRate", _os.path.join(_su.resource_package_dir(), "processes", "DarkNewsTables", "AnalyticRate.py"))
 
 # Real BNB flux: source the parent mesons from the 12M dk2nu file (the physical
 # flux) instead of the synthetic Sanford-Wang BNBFlux.  FLUX=bnb reverts to the
@@ -109,43 +111,13 @@ def _get_primakoff(S):
     return None
 
 
-def sample_cos_star(dp, E, rng, nE=48, nt=160):
-    """Vectorised sample of the Primakoff opening angle cos(theta*) (photon wrt
-    incoming phi) from dsigma/dt, binned in E_phi. cos(theta*) ~ 1 + t/(2 E^2)."""
-    E = np.asarray(E, float)
-    out = np.ones_like(E)
-    if E.size == 0:
-        return out
-    edges = np.linspace(E.min(), E.max() + 1e-9, nE + 1)
-    idx = np.clip(np.digitize(E, edges) - 1, 0, nE - 1)
-    for b in range(nE):
-        m = idx == b
-        if not m.any():
-            continue
-        Eb = 0.5 * (edges[b] + edges[b + 1])
-        s = dp.m_phi ** 2 + dp.MA ** 2 + 2.0 * dp.MA * Eb
-        tlo, thi = dp._t_range(s)
-        if tlo is None or thi <= tlo:
-            continue
-        ts = np.linspace(tlo, thi, nt)
-        w = np.array([dp._dsigma_dt(s, t) for t in ts])
-        if w.sum() <= 0:
-            continue
-        cdf = np.cumsum(w); cdf /= cdf[-1]
-        tsamp = np.interp(rng.random(int(m.sum())), cdf, ts)
-        out[m] = np.clip(1.0 + tsamp / (2.0 * Eb * Eb), -1.0, 1.0)
-    return out
-
-
-def smear_photon_beam(cos_med, E, dp, rng):
-    """Rotate the mediator direction (cos_med wrt beam) by the sampled Primakoff
-    opening angle to get the outgoing-photon cos(theta) wrt the beam."""
-    cstar = sample_cos_star(dp, E, rng)
-    th_med = np.arccos(np.clip(cos_med, -1.0, 1.0))
-    th_star = np.arccos(np.clip(cstar, -1.0, 1.0))
-    psi = rng.uniform(0.0, 2.0 * np.pi, size=E.shape)
-    return np.clip(np.cos(th_med) * np.cos(th_star)
-                   + np.sin(th_med) * np.sin(th_star) * np.cos(psi), -1.0, 1.0)
+# The Primakoff photon-angle smearing now lives in the DarkNewsTables package
+# (DarkPrimakoff.py) -- it is pure dark-Primakoff physics. Re-exported here so
+# existing `from plot_sbnd_analytic import smear_photon_beam` importers keep working.
+_DP = _su.load_module("DarkPrimakoff", _os.path.join(
+    _su.resource_package_dir(), "processes", "DarkNewsTables", "DarkPrimakoff.py"))
+sample_cos_star = _DP.sample_cos_star
+smear_photon_beam = _DP.smear_photon_beam
 
 
 def make_plot(key, n_dec, eff_mode="lartpc", muon_only=True, level="capability"):

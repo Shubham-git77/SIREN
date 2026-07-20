@@ -20,7 +20,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-import sbnd_analytic as SA
+from siren import _util as _su
+import os as _os
+SA = _su.load_module("AnalyticRate", _os.path.join(_su.resource_package_dir(), "processes", "DarkNewsTables", "AnalyticRate.py"))
 from plot_sbnd_analytic import (smear_photon_beam, _get_primakoff, load_portal, COLORS,
                                 WIN_LO, WIN_HI, MB_EXCESS)
 

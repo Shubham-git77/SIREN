@@ -27,7 +27,8 @@ import numpy as np
 from siren import _util
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SA = _util.load_module("sbnd_analytic", os.path.join(HERE, "sbnd_analytic.py"))
+SA = _util.load_module("AnalyticRate", os.path.join(
+    _util.resource_package_dir(), "processes", "DarkNewsTables", "AnalyticRate.py"))
 from plot_sbnd_analytic import (smear_photon_beam, _get_primakoff, COLORS,
                                 mb_inwindow, SINGLE_GAMMA_EFF, SEL_FACTOR,
                                 WIN_LO, WIN_HI, MB_EXCESS)
