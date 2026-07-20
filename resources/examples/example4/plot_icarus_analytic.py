@@ -34,7 +34,8 @@ import sbnd_analytic as SA
 # reuse the SBND plotter's helpers + the SAME MiniBooNE anchor machinery
 # (import-safe: plot_sbnd_analytic is main-guarded).
 from plot_sbnd_analytic import (smear_photon_beam, _get_primakoff, COLORS,
-                                mb_inwindow, SEL_FACTOR, WIN_LO, WIN_HI, MB_EXCESS)
+                                mb_inwindow, SEL_FACTOR, SINGLE_GAMMA_EFF,
+                                WIN_LO, WIN_HI, MB_EXCESS)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -88,7 +89,14 @@ def make_plot(key, n_dec, eff_mode="lartpc", muon_only=True, level="capability")
     anchor_flux = os.environ.get("ANCHOR_FLUX", "dk2nu")
     mb_mfn = None
     if anchored:
-        eff_mode = "lartpc"; wscale = SEL_FACTOR       # detector selection (prod/2 cancels in R)
+        # single-photon (scalar/pseudo): grounded flat total single-gamma eff on
+        # the raw sigma*N*chord yield (replaces the back-tuned lartpc x SEL). The
+        # vector e+e- pair is electron-like (higher eff, no dedicated study), so
+        # keep the legacy lartpc x SEL_FACTOR there and flag it for grounding.
+        if vector:
+            eff_mode = "lartpc"; wscale = SEL_FACTOR
+        else:
+            eff_mode = "raw"; wscale = SINGLE_GAMMA_EFF
         if anchor_flux == "bnb":
             _ensure_bnb(S); meson_fn = None; mb_mfn = None
         else:
@@ -97,11 +105,21 @@ def make_plot(key, n_dec, eff_mode="lartpc", muon_only=True, level="capability")
         meson_fn = SA._mesons_dk2nu
         wscale = 1.0
 
+    # ICARUS = two separate cryostats. Call the analytic engine once per active
+    # MODULE center (single-module _TPC_BOX in the portal module) and sum the
+    # per-module yields; a single fat box would include the 1.2 m argon-free gap
+    # and the warm vessel. Falls back to DET_ICARUS if the module constants are
+    # absent (older portal module without the two-module geometry fix).
+    module_centers = [np.asarray(c, float)
+                      for c in getattr(S, "ICARUS_MODULE_CENTERS_BNB", [DET_ICARUS])]
     data = {}
     for nm in chan_names:
-        E, w, c = fn(S, nm, n_dec=n_dec, return_cos=True, eff_mode=eff_mode,
-                     det=DET_ICARUS, pot=pot, meson_fn=meson_fn)
-        E, w, c = np.asarray(E), np.asarray(w) * wscale, np.asarray(c)
+        Es, Ws, Cs = [], [], []
+        for ctr in module_centers:
+            E, w, c = fn(S, nm, n_dec=n_dec, return_cos=True, eff_mode=eff_mode,
+                         det=ctr, pot=pot, meson_fn=meson_fn)
+            Es.append(np.asarray(E)); Ws.append(np.asarray(w) * wscale); Cs.append(np.asarray(c))
+        E = np.concatenate(Es); w = np.concatenate(Ws); c = np.concatenate(Cs)
         if dp is not None and E.size:        # scalar/pseudo: mediator dir -> photon dir
             c = smear_photon_beam(c, E, dp, rng)
         data[nm] = (E, w, c)

@@ -21,7 +21,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import sbnd_analytic as SA
-from plot_sbnd_analytic import smear_photon_beam, _get_primakoff, load_portal, COLORS
+from plot_sbnd_analytic import (smear_photon_beam, _get_primakoff, load_portal, COLORS,
+                                WIN_LO, WIN_HI, MB_EXCESS)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -32,7 +33,7 @@ PORTALS = {
 }
 
 
-def make_plot(key, n_dec=400, muon_only=True):
+def make_plot(key, n_dec=400, muon_only=True, level="capability"):
     fname, label, vector = PORTALS[key]
     S = load_portal(fname)
     pot = S.MINIBOONE_POT
@@ -40,6 +41,7 @@ def make_plot(key, n_dec=400, muon_only=True):
     rng = np.random.default_rng(1234)
     flux = os.environ.get("FLUX", "dk2nu")             # real BNB dk2nu (default) | bnb synthetic
     meson_fn = SA._mesons_dk2nu if flux == "dk2nu" else None
+    anchored = (level == "anchored")
 
     chans = list(S.CHANNELS)
     if muon_only and not vector:
@@ -53,6 +55,21 @@ def make_plot(key, n_dec=400, muon_only=True):
         if dp is not None and E.size:          # scalar/pseudo -> true photon dir
             c = smear_photon_beam(c, E, dp, rng)
         data[nm] = (E, w, c)
+
+    # Anchoring: rescale the model so the MiniBooNE in-window [WIN_LO,WIN_HI]
+    # yield equals the measured 320-event excess. MiniBooNE IS the anchor, so
+    # by construction its anchored in-window = MB_EXCESS exactly (R = 1); the
+    # SAME kfac applied to SBND/ICARUS gives R x 320 there. This puts all three
+    # detectors on identical axes and normalization.
+    win_ev = sum(d[1][(d[0] >= WIN_LO) & (d[0] <= WIN_HI)].sum() for d in data.values())
+    anchor_info = None
+    if anchored:
+        m_win = win_ev
+        kfac = MB_EXCESS / m_win if m_win > 0 else 0.0
+        for nm in data:
+            E, w, c = data[nm]; data[nm] = (E, w * kfac, c)
+        win_ev *= kfac
+        anchor_info = (m_win, kfac, m_win / MB_EXCESS)
 
     total = sum(d[1].sum() for d in data.values())
     cos_note = "photon" if dp is not None else "$e^+e^-$ system"
@@ -92,6 +109,8 @@ def make_plot(key, n_dec=400, muon_only=True):
 
     pot_note = "(%.2e POT)" % pot
     ax[0].axvline(0.140, color="0.4", ls="--", lw=1)
+    if anchored:
+        ax[0].axvspan(WIN_LO, WIN_HI, color="gold", alpha=0.20, label="signal window")
     ax[0].set_title("%s: $E_{vis}$ %s" % (label, pot_note))
     ax[0].set_xlabel(r"$E_{vis}$ [GeV]"); ax[0].set_ylabel("events / bin")
     ax[1].set_title("%s: $\\cos\\theta$ %s" % (label, pot_note))
@@ -100,22 +119,33 @@ def make_plot(key, n_dec=400, muon_only=True):
     ax[2].set_xlabel(r"$\cos\theta$"); ax[2].set_ylabel("events / bin")
     for a in ax:
         a.legend(fontsize=8)
-    fig.suptitle("MiniBooNE analytic $\\sigma\\!\\cdot\\!N\\!\\cdot\\!$chord  --  %s  --  TOTAL = %.3e events\n"
-                 "%s  |  %s  |  flux: %s" % (label, total, eff_tag, coup,
-                 "real dk2nu" if flux == "dk2nu" else "BNBFlux"), fontsize=11)
+    if anchored:
+        m_win, kfac, mb_over = anchor_info
+        fig.suptitle("MiniBooNE MiniBooNE-ANCHORED observable  --  %s  --  in-window[%.2f,%.2f] = %.0f events\n"
+                     "MiniBooNE-ANCHORED: MB/MB ratio=1.00 $\\times$ measured excess %.0f "
+                     "(MB model=%.0f = %.1f$\\times$%.0f @ MB-POT %.2e; window [%.2f,%.2f])  |  %s  |  flux: %s"
+                     % (label, WIN_LO, WIN_HI, win_ev, MB_EXCESS, m_win, mb_over, MB_EXCESS, pot,
+                        WIN_LO, WIN_HI, coup, "real dk2nu" if flux == "dk2nu" else "BNBFlux"), fontsize=11)
+    else:
+        fig.suptitle("MiniBooNE analytic $\\sigma\\!\\cdot\\!N\\!\\cdot\\!$chord  --  %s  --  TOTAL = %.3e events\n"
+                     "%s  |  %s  |  flux: %s" % (label, total, eff_tag, coup,
+                     "real dk2nu" if flux == "dk2nu" else "BNBFlux"), fontsize=11)
     plt.tight_layout(rect=[0, 0, 1, 0.93])
 
     os.makedirs(os.path.join(HERE, "output"), exist_ok=True)
-    out = os.path.join(HERE, "output", "MiniBooNE_%s_analytic_countrate.png" % key)
+    suffix = "anchored_muononly" if anchored else "countrate"
+    out = os.path.join(HERE, "output", "MiniBooNE_%s_analytic_%s.png" % (key, suffix))
     plt.savefig(out, dpi=130); plt.close(fig)
-    print("  %-8s TOTAL=%.3e  -> %s" % (key, total, os.path.basename(out)))
+    tag = ("ANCHORED in-window=%.0f ev" % win_ev) if anchored else ("TOTAL=%.3e" % total)
+    print("  %-8s %s  -> %s" % (key, tag, os.path.basename(out)))
     return {nm: data[nm][1].sum() for nm in data}
 
 
 if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
     n_dec = int(os.environ.get("N_DEC", "400"))
+    level = os.environ.get("LEVEL", "capability")     # capability | anchored
     keys = list(PORTALS) if which == "all" else [which]
-    print("MiniBooNE analytic count-rate plots (n_dec=%d)\n" % n_dec)
+    print("MiniBooNE analytic plots (n_dec=%d, LEVEL=%s)\n" % (n_dec, level))
     for k in keys:
-        make_plot(k, n_dec=n_dec)
+        make_plot(k, n_dec=n_dec, level=level)

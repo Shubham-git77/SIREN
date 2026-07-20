@@ -287,6 +287,7 @@ def dk2nu_to_primary_distribution(
     parent_pdg=None,
     sampling_bias=None,
     flux_weighted_sampling=False,
+    beam_transform=None,
 ):
     """
     Build a PrimaryExternalDistribution directly from dk2nu data.
@@ -305,12 +306,25 @@ def dk2nu_to_primary_distribution(
         Filter to specific parent PDG code(s).
     sampling_bias : callable, optional
         Function f(E, px, py, pz, vx, vy, vz) -> weight that computes
-        per-entry sampling weights from the pion kinematics (in geometry
-        coordinates, before the detector transform).  Entries are selected
+        per-entry sampling weights from the pion kinematics (in the raw
+        dk2nu beam frame, before any transform).  Entries are selected
         with probability proportional to these weights.  The generation
         probability accounts for the bias so event weights remain correct.
         Arguments are numpy arrays; the return value should broadcast to
         the same length.  When None (default), uniform selection is used.
+    beam_transform : Transform, optional
+        Rigid transform (with .R rotation matrix and .t translation in
+        METERS) from the dk2nu beam frame to the SIREN geometry (world)
+        frame.  Required for flux files whose coordinates are not already
+        in the geometry frame — e.g. NuMI g4numi dk2nu files, whose
+        vertices/momenta are in NuMI beam coordinates (origin at MCZERO,
+        z along the NuMI axis).  Use
+        sbn_geometry.transform("NuMI", "BNB") for NuMI files with the
+        SBN detector models (world frame = BNB).  Positions are converted
+        cm -> m first, then r_geo = R @ r_beam + t; momenta are rotated
+        p_geo = R @ p_beam.  When None (default), dk2nu coordinates are
+        assumed to already be in the geometry frame (correct for BNB
+        G4BNB files).
 
     Returns
     -------
@@ -342,6 +356,19 @@ def dk2nu_to_primary_distribution(
 
     weight = nimpwt / simulated_pot
 
+    # Beam frame -> geometry (world) frame.  dk2nu positions are in cm;
+    # beam_transform.t is in meters, so convert units first.
+    if beam_transform is not None:
+        R = np.asarray(beam_transform.R, dtype=float)
+        t = np.asarray(beam_transform.t, dtype=float)
+        pos_geo = R @ np.stack([vx, vy, vz]) * 0.01 + t[:, None]
+        gx, gy, gz = pos_geo
+        mom_geo = R @ np.stack([px, py, pz])
+        gpx, gpy, gpz = mom_geo
+    else:
+        gx, gy, gz = vx * 0.01, vy * 0.01, vz * 0.01
+        gpx, gpy, gpz = px, py, pz
+
     mass_map = {
         211: 0.13957039, -211: 0.13957039,
         321: 0.49368,    -321: 0.49368,
@@ -353,18 +380,16 @@ def dk2nu_to_primary_distribution(
     data = []
     for i in range(len(E)):
         # Convert position from geometry (BNB) to detector coordinates
-        geo_pos = GeometryPosition(Vector3D(
-            vx[i] * 0.01, vy[i] * 0.01, vz[i] * 0.01
-        ))
+        geo_pos = GeometryPosition(Vector3D(gx[i], gy[i], gz[i]))
         det_pos = detector_model.GeoPositionToDetPosition(geo_pos).get()
 
         # Convert momentum direction from geometry to detector coordinates.
         # Energy is a scalar and is unchanged; the 3-momentum direction
         # must be rotated if the detector axes differ from geometry axes.
-        p_mag = math.sqrt(float(px[i])**2 + float(py[i])**2 + float(pz[i])**2)
+        p_mag = math.sqrt(float(gpx[i])**2 + float(gpy[i])**2 + float(gpz[i])**2)
         if p_mag > 0:
             geo_dir = GeometryDirection(Vector3D(
-                float(px[i]) / p_mag, float(py[i]) / p_mag, float(pz[i]) / p_mag))
+                float(gpx[i]) / p_mag, float(gpy[i]) / p_mag, float(gpz[i]) / p_mag))
             det_dir = detector_model.GeoDirectionToDetDirection(geo_dir).get()
             px_det = det_dir.GetX() * p_mag
             py_det = det_dir.GetY() * p_mag
@@ -413,6 +438,7 @@ def dk2nu_to_csv(
     parent_pdg=None,
     position_transform=None,
     units_cm=True,
+    beam_transform=None,
 ):
     """
     Write dk2nu parent meson kinematics to a CSV file suitable for
@@ -433,9 +459,18 @@ def dk2nu_to_csv(
         Function that takes (vx, vy, vz) arrays in dk2nu coordinates
         and returns (x0, y0, z0) arrays in detector coordinates.
         dk2nu positions are in cm.  If None, positions are used as-is.
+        Applied after beam_transform (if both are given).
     units_cm : bool
         If True (default), positions in the CSV are in cm.
         If False, positions are converted to meters.
+    beam_transform : Transform, optional
+        Rigid transform (with .R rotation matrix and .t translation in
+        METERS) from the dk2nu beam frame to the SIREN geometry (world)
+        frame — e.g. sbn_geometry.transform("NuMI", "BNB") for NuMI
+        g4numi files.  Positions get r_geo = R @ r_beam + t (translation
+        applied in cm internally); momenta get p_geo = R @ p_beam.
+        When None (default), dk2nu coordinates are assumed to already be
+        in the geometry frame (correct for BNB G4BNB files).
 
     Returns
     -------
@@ -459,6 +494,14 @@ def dk2nu_to_csv(
     vz = dk2nu_data["vz"][mask]
     nimpwt = dk2nu_data["nimpwt"][mask]
     pt = ptype[mask]
+
+    # Beam frame -> geometry (world) frame.  Positions here are in cm,
+    # so the transform translation (meters) is scaled to cm.
+    if beam_transform is not None:
+        R = np.asarray(beam_transform.R, dtype=float)
+        t = np.asarray(beam_transform.t, dtype=float)
+        vx, vy, vz = R @ np.stack([vx, vy, vz]) + t[:, None] * 100.0
+        px, py, pz = R @ np.stack([px, py, pz])
 
     if position_transform is not None:
         vx, vy, vz = position_transform(vx, vy, vz)

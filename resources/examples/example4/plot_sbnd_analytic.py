@@ -37,14 +37,25 @@ COLORS = {"K_e": "tab:blue", "K_mu": "tab:orange", "pi_e": "tab:green", "pi_mu":
 
 # --- analysis-level knobs (turn a capability yield into a quotable observable) ---
 # PROD_FACTOR : known C-R Eq.25 production prefactor (code is 2x high) -> /2.
-# SEL_FACTOR  : background-rejection SELECTION retention ON TOP of the LArTPC reco
-#               capability (PID/containment/cosmic+dirt rejection). ~0.15 is a
-#               generic-LArTPC single-photon estimate; combined with the ~0.9 reco
-#               plateau this gives total single-gamma eff ~0.13 (~MiniBooNE-like).
+# SINGLE_GAMMA_EFF : GROUNDED total LArTPC single-photon selection efficiency
+#   (photon conversion + shower containment + reconstruction + background-
+#   rejection selection), applied FLAT. This REPLACES the old back-tuned
+#   lartpc-capability(~0.65) x SEL_FACTOR(0.15) ~ 0.10 factorization, whose 0.15
+#   was reverse-engineered to make SBND "MiniBooNE-like" rather than cited.
+#   Central 0.10 = the SBND single-photon projection standard (MicroBooNE-
+#   consistent, E_gamma > 20 MeV). Systematic band [0.05, 0.20] spans MicroBooNE's
+#   MEASURED NC Delta->N gamma LArTPC selections (Wire-Cell/Pandora 1g0p/1gNp =
+#   4.1-8.8% single, 19.6% combined; arXiv:2502.05750, Table 1) and the SBND
+#   flat-10% projection (arXiv:2506.14881). The published number is a TOTAL
+#   efficiency, so it is applied on the RAW sigma*N*chord yield -- NO separate
+#   lartpc capability factor (that would double-count containment/reco).
+#   Override for the systematic band via the SINGLE_GAMMA_EFF env var.
+# SEL_FACTOR  : DEPRECATED (retained only for the legacy 'analysis' level).
 # WIN         : single-photon signal energy window (MiniBooNE low-E excess region),
 #               the relevant comparison region for E_vis ~ E_gamma.
 PROD_FACTOR = 0.5
 SEL_FACTOR  = 0.15
+SINGLE_GAMMA_EFF = float(os.environ.get("SINGLE_GAMMA_EFF", "0.10"))
 WIN_LO, WIN_HI = 0.140, 0.300         # GeV
 
 # --- MiniBooNE anchor (coupling-normalized SBND yield) ------------------------
@@ -165,11 +176,29 @@ def make_plot(key, n_dec, eff_mode="lartpc", muon_only=True, level="capability")
     #              in-window yield = (SBND/MiniBooNE ratio) x MB measured excess.
     analysis = (level == "analysis")
     anchored = (level == "anchored")
-    if analysis or anchored:
+    # SBND per-hit weight scale + efficiency treatment:
+    #   analysis  => legacy: lartpc capability x (prod/2 x SEL_FACTOR).
+    #   anchored  => GROUNDED: flat cited total single-gamma efficiency on the
+    #                RAW sigma*N*chord yield (prod/2 cancels in the SBND/MB
+    #                ratio, so it is omitted). See SINGLE_GAMMA_EFF above.
+    #   capability/raw => 1.
+    if analysis:
         eff_mode = "lartpc"
-    # SBND per-hit weight scale: analysis => prod/2 x SEL; anchored => SEL only
-    # (prod/2 cancels in the SBND/MB ratio); capability/raw => 1.
-    wscale = (PROD_FACTOR * SEL_FACTOR) if analysis else (SEL_FACTOR if anchored else 1.0)
+        wscale = PROD_FACTOR * SEL_FACTOR
+    elif anchored and not vector:
+        # single-photon (scalar/pseudo): grounded flat total single-gamma eff.
+        eff_mode = "raw"
+        wscale = SINGLE_GAMMA_EFF
+    elif anchored:
+        # vector: the e+e- pair is collimated (single-ring-like) and selected
+        # with the ELECTRON-like efficiency (higher than single-gamma), not the
+        # single-photon number. No dedicated SBND e+e- study is available, so
+        # keep the legacy lartpc x SEL_FACTOR here and flag it for its own
+        # grounding rather than mis-applying SINGLE_GAMMA_EFF.
+        eff_mode = "lartpc"
+        wscale = SEL_FACTOR
+    else:
+        wscale = 1.0
 
     data = {}
     for nm in chan_names:
@@ -201,8 +230,9 @@ def make_plot(key, n_dec, eff_mode="lartpc", muon_only=True, level="capability")
     if anchored:
         R, m_win, mb_pot, mb_over = anchor_info
         eff_tag = ("MiniBooNE-ANCHORED: SBND/MB ratio=%.2f $\\times$ measured excess %.0f "
-                   "(MB model=%.0f = %.1f$\\times$320 at MB-POT %.2e; window [%.2f,%.2f])"
-                   % (R, MB_EXCESS, m_win, mb_over, mb_pot, WIN_LO, WIN_HI))
+                   "(MB model=%.0f = %.1f$\\times$320 at MB-POT %.2e; window [%.2f,%.2f]); "
+                   "SBND single-$\\gamma$ eff=%.2f (cited, arXiv:2502.05750/2506.14881)"
+                   % (R, MB_EXCESS, m_win, mb_over, mb_pot, WIN_LO, WIN_HI, SINGLE_GAMMA_EFF))
     elif analysis:
         eff_tag = ("ANALYSIS-LEVEL: production/2 $\\times$ selection $\\varepsilon_{sel}$=%.2f "
                    "(on LArTPC reco) $\\times$ window [%.2f,%.2f] GeV"

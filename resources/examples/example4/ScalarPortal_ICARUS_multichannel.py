@@ -90,10 +90,18 @@ PHI = PT(5919)             # scalar mediator (single secondary vertex)
 # In detector coordinates the 8 TPC corners reach R = 14.51 m, so
 # R_LAR_INJECT must exceed 14.51 m to enclose the full active volume.
 # Tight bounding box (X×Y×Z) encloses all 8 TPC sectors with minimal deadzone.
-R_LAR_INJECT = 15.0   # sphere radius [m] — encloses all 8 TPC corners (max 14.51 m)
-_TPC_BOX_X   = 8.64   # full TPC x-extent [m]  (covers ±4.32 m)
-_TPC_BOX_Y   = 6.34   # full TPC y-extent [m]
-_TPC_BOX_Z   = 26.84  # full TPC z-extent [m]  (covers ±13.42 m)
+# ICARUS is TWO separate cryostats (C0, C1) with a ~1.2 m argon-free gap, NOT
+# one monolithic box. _TPC_BOX is ONE active module (3.0 x 3.16 x 17.95 m from
+# sbn_geometry ICARUS_C0/C1); the analytic engine is called once per module
+# center (ICARUS_MODULE_CENTERS_BNB) and the yields are summed. The old single
+# 8.64 x 6.34 x 26.84 m box was the warm-vessel envelope -> 2051 t of phantom
+# argon (4.3x the true 476 t across both modules), inflating every ICARUS rate.
+R_LAR_INJECT = 10.0   # sphere radius [m] — encloses one module's far corner (9.23 m)
+_TPC_BOX_X   = 3.00   # single-module x-extent [m]  (covers ±1.50 m)
+_TPC_BOX_Y   = 3.16   # single-module y-extent [m]
+_TPC_BOX_Z   = 17.95  # single-module z-extent [m]  (covers ±8.975 m)
+# Two active-module centers in the BNB frame [m] (sbn_geometry ICARUS_C0/C1).
+ICARUS_MODULE_CENTERS_BNB = [(-2.10215, -0.202, 600.0), (2.10215, -0.202, 600.0)]
 LAR_TARGET_PDGS = {1000180400}                # Ar40
 events_to_inject = 10_000
 
