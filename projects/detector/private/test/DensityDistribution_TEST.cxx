@@ -8,6 +8,7 @@
 
 #include "SIREN/detector/DensityDistribution.h"
 #include "SIREN/detector/DensityDistribution1D.h"
+#include "SIREN/detector/CartesianAxisDensityDistribution.h"
 #include "SIREN/detector/Distribution1D.h"
 #include "SIREN/detector/Axis1D.h"
 #include "SIREN/detector/RadialAxis1D.h"
@@ -26,6 +27,30 @@ std::uniform_real_distribution<double> uniform_distribution(0.0, 1.0);
 
 double RandomDouble() {
     return uniform_distribution(rng_);
+}
+
+TEST(InverseIntegral, CartesianDensityWithConstantUsesLocalDistance) {
+    CartesianAxis1D axis(
+        Vector3D(1.0, 0.0, 0.0), Vector3D(0.0, 0.0, 0.0));
+    PolynomialDistribution1D polynomial({2.0, 0.25});
+    DensityDistribution1D<CartesianAxis1D, PolynomialDistribution1D> density(
+        axis, polynomial);
+    // The segment starts away from the axis origin on purpose: the constant
+    // term must contribute per unit of distance traveled from the start, not
+    // per unit of absolute axis coordinate, and only a nonzero start
+    // coordinate distinguishes the two.
+    Vector3D start(3.0, 0.0, 0.0);
+    Vector3D direction(1.0, 0.0, 0.0);
+    constexpr double constant = 0.7;
+    constexpr double expected_distance = 1.25;
+    double integral = density.Integral(
+        start, direction, expected_distance)
+        + constant * expected_distance;
+
+    EXPECT_NEAR(
+        density.InverseIntegral(
+            start, direction, constant, integral, 5.0),
+        expected_distance, 1.0e-12);
 }
 
 Vector3D RandomVector() {
@@ -1387,4 +1412,3 @@ int main(int argc, char** argv)
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
-
