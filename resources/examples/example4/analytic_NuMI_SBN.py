@@ -33,7 +33,7 @@ from plot_sbnd_analytic import (smear_photon_beam, _get_primakoff, COLORS,
                                 mb_inwindow, SINGLE_GAMMA_EFF, SEL_FACTOR,
                                 WIN_LO, WIN_HI, MB_EXCESS)
 # reuse the flux reader (multi-file g4numi + NuMI->BNB transform) and its POT.
-from analytic_NuMI_ICARUS import numi_meson_fn, ICARUS_NUMI_POT, NUMI_FILES, _glob
+from analytic_NuMI_ICARUS import numi_meson_fn, ICARUS_NUMI_POT, NUMI_FILES, _glob, BEAM
 GEO = _util.load_module("sbn_geometry",
                         os.path.join(_util.resource_package_dir(),
                                      "detectors", "SBN", "SBN-v1", "sbn_geometry.py"))
@@ -194,7 +194,7 @@ def main():
             print("    %-7s : %.4e events" % (nm, per[nm]))
         print("    %-7s : %.4e events" % ("in-window" if args.anchored else "TOTAL",
                                           win if args.anchored else grand))
-        tag = "anchored" if args.anchored else "capability"
+        tag = ("anchored" if args.anchored else "capability") + "_" + BEAM
         out = os.path.join(HERE, "output", "%s_NuMI_%s_%s.png" % (det, key, tag))
         plot_portal(det, key, vector, dp, data, per, grand, out, args.anchored, win, R)
         np.savez(os.path.join(HERE, "output", "%s_NuMI_%s_%s.npz" % (det, key, tag)),

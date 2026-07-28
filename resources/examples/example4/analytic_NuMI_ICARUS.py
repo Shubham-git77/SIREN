@@ -64,6 +64,16 @@ NUMI_FILES = ([os.environ["NUMI_DK2NU_FILE"]] if os.environ.get("NUMI_DK2NU_FILE
               else sorted(glob.glob(_glob)))
 ICARUS_NUMI_POT = float(os.environ.get("ICARUS_NUMI_POT", "3.0e21"))
 
+
+def _beam_tag(files):
+    """Horn-current / beam mode from the g4numi filenames, so outputs are
+    self-labeled and RHC/FHC runs can never overwrite each other."""
+    n = " ".join(os.path.basename(f).lower() for f in files)
+    return "RHC" if "_rhc" in n else ("FHC" if "_fhc" in n else "NuMI")
+
+
+BEAM = _beam_tag(NUMI_FILES)
+
 _NMAX = int(os.environ.get("NUMI_NMAX", "120000"))   # parents/species cap (raise to use multi-file stats)
 
 
@@ -211,7 +221,7 @@ def main():
             print("    %-7s : %.4e events" % (nm, per[nm]))
         lbl = "in-window" if args.anchored else "TOTAL"
         print("    %-7s : %.4e events" % (lbl, win if args.anchored else grand))
-        tag = "anchored" if args.anchored else "capability"
+        tag = ("anchored" if args.anchored else "capability") + "_" + BEAM
         out = os.path.join(HERE, "output", "ICARUS_NuMI_%s_%s.png" % (key, tag))
         plot_portal(key, vector, dp, data, per, grand, out, anchored=args.anchored,
                     win=win, R=R)
