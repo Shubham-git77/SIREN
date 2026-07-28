@@ -25,7 +25,13 @@ import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
 PORTAL = os.environ.get("PORTAL", "scalar")
 os.environ.setdefault("DK2NU_FILE", "/home/shubham/nubeam12M.dk2nu.root")
 HERE = os.path.dirname(os.path.abspath(__file__)); os.chdir(HERE)
-PKG  = "/home/shubham/siren_venv/lib/python3.12/site-packages/siren/resources/processes/DarkNewsTables"
+PKG  = os.environ.get(
+    "SIREN_DNT_DIR",
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "processes", "DarkNewsTables",
+    ),
+)
 
 def load(path, name):
     import sys
