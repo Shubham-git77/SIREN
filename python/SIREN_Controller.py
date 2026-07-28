@@ -145,18 +145,49 @@ class SIREN_Controller:
 
         # Loop through possible secondary interactions
         for i_sec, secondary_type in enumerate(secondary_types):
-            secondary_injection_process = _injection.SecondaryInjectionProcess()
-            secondary_injection_process.primary_type = secondary_type
-
-            sec_idist_list = list(secondary_injection_distributions[i_sec])
-            # Add the position distribution
-            if fid_vol_secondary and self.fid_vol is not None:
-                sec_idist_list.append(_distributions.SecondaryBoundedVertexDistribution(self.fid_vol))
+            # Reuse an existing process for this secondary type (e.g. one
+            # already registered by InputDarkNewsModel) instead of appending
+            # a duplicate: the injector matches processes by primary_type and
+            # would use whichever comes FIRST, silently ignoring this one.
+            secondary_injection_process = None
+            for existing in self.secondary_injection_processes:
+                if existing.primary_type == secondary_type:
+                    secondary_injection_process = existing
+                    break
+            is_new_process = secondary_injection_process is None
+            if is_new_process:
+                secondary_injection_process = _injection.SecondaryInjectionProcess()
+                secondary_injection_process.primary_type = secondary_type
+                carried_dists = []
             else:
-                sec_idist_list.append(_distributions.SecondaryPhysicalVertexDistribution())
+                # Keep the reused process's non-position distributions; the
+                # caller's vertex distribution (if any) supersedes a default
+                # vertex distribution appended earlier.
+                carried_dists = [
+                    d for d in secondary_injection_process.distributions
+                    if "VertexDistribution" not in type(d).__name__
+                ]
+
+            sec_idist_list = carried_dists + list(secondary_injection_distributions[i_sec])
+            # Add a default position distribution ONLY if the user did not
+            # already supply a vertex distribution. Unconditionally appending
+            # one gave the process TWO position distributions whenever the
+            # caller passed their own (e.g. a SecondaryBoundedVertexDistribution
+            # for a GDML-composite detector where self.fid_vol is None); the
+            # appended SecondaryPhysicalVertexDistribution then resampled the
+            # vertex unbounded, silently undoing the caller's confinement.
+            has_vertex_dist = any(
+                "VertexDistribution" in type(d).__name__ for d in sec_idist_list
+            )
+            if not has_vertex_dist:
+                if fid_vol_secondary and self.fid_vol is not None:
+                    sec_idist_list.append(_distributions.SecondaryBoundedVertexDistribution(self.fid_vol))
+                else:
+                    sec_idist_list.append(_distributions.SecondaryPhysicalVertexDistribution())
             secondary_injection_process.distributions = sec_idist_list
 
-            self.secondary_injection_processes.append(secondary_injection_process)
+            if is_new_process:
+                self.secondary_injection_processes.append(secondary_injection_process)
 
     def SetPhysicalProcesses(
         self,
@@ -232,8 +263,11 @@ class SIREN_Controller:
         :param float Emax: maximum energy for cross section tables
         :param dict<str,val> kwargs: The dict of DarkNews model and cross section parameters
         """
-        # Add nuclear targets to the model arguments
-        kwargs["nuclear_targets"] = self.GetDetectorModelTargets()[1]
+        # Add nuclear targets to the model arguments (unless the caller supplied
+        # an explicit list, e.g. to restrict to the dominant dirt nuclei so the
+        # DarkNews table build stays fast).
+        if not kwargs.get("nuclear_targets"):
+            kwargs["nuclear_targets"] = self.GetDetectorModelTargets()[1]
         # Initialize DarkNews cross sections and decays
         self.DN_processes = PyDarkNewsInteractionCollection(
             table_dir=table_dir, **kwargs
@@ -298,10 +332,18 @@ class SIREN_Controller:
             # Add the secondary position distribution (append to whatever the
             # process already carries; the pybind `distributions` is a list property).
             sec_dists = list(secondary_injection_process.distributions)
-            if fid_vol_secondary and self.fid_vol is not None:
-                sec_dists.append(_distributions.SecondaryBoundedVertexDistribution(self.fid_vol))
-            else:
-                sec_dists.append(_distributions.SecondaryPhysicalVertexDistribution())
+            # Only append a default vertex distribution if the process does
+            # not already carry one (e.g. supplied by the user through
+            # SetProcesses); a second position distribution would silently
+            # resample and override the first.
+            has_vertex_dist = any(
+                "VertexDistribution" in type(d).__name__ for d in sec_dists
+            )
+            if not has_vertex_dist:
+                if fid_vol_secondary and self.fid_vol is not None:
+                    sec_dists.append(_distributions.SecondaryBoundedVertexDistribution(self.fid_vol))
+                else:
+                    sec_dists.append(_distributions.SecondaryPhysicalVertexDistribution())
             secondary_injection_process.distributions = sec_dists
 
             if not inj_sec_defined:
@@ -332,8 +374,11 @@ class SIREN_Controller:
         :param string table_dir: Directory for storing cross section and decay tables
         :param dict<str,val> kwargs: The dict of DarkNews model and cross section parameters
         """
-        # Add nuclear targets to the model arguments
-        kwargs["nuclear_targets"] = self.GetDetectorModelTargets()[1]
+        # Add nuclear targets to the model arguments (unless the caller supplied
+        # an explicit list, e.g. to restrict to the dominant dirt nuclei so the
+        # DarkNews table build stays fast).
+        if not kwargs.get("nuclear_targets"):
+            kwargs["nuclear_targets"] = self.GetDetectorModelTargets()[1]
         # Initialize DarkNews cross sections and decays
         self.DN_processes = PyDarkNewsInteractionCollection(
             table_dir=table_dir, **kwargs

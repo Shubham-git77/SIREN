@@ -548,11 +548,13 @@ class PyDarkNewsCrossSection(DarkNewsCrossSection):
             p1p3 = interaction.primary_momentum[0] * interaction.secondary_momenta[0][
                 0
             ] - np.sum(
-                p1 * p3
-                for p1, p3 in zip(
-                    interaction.primary_momentum[1:],
-                    interaction.secondary_momenta[0][1:],
-                )
+                [
+                    p1 * p3
+                    for p1, p3 in zip(
+                        interaction.primary_momentum[1:],
+                        interaction.secondary_momenta[0][1:],
+                    )
+                ]
             )
             Q2 = -(m1sq + m3sq - 2 * p1p3)
             energy = interaction.primary_momentum[0]
