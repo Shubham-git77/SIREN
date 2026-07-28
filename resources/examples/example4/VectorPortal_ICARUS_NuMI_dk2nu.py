@@ -63,9 +63,19 @@ ICARUS_NUMI_POT = float(os.environ.get("ICARUS_NUMI_POT", 3.0e21))
 #   x: +/-3.60 m,  y: -0.202 +/- 1.58 m,  z: +/-8.975 m
 # (detector frame is centered on the LAr geometric center, so the box is
 # origin-centered in detector coordinates).
-fc._TPC_BOX_X = 7.20     # full width  [m]
-fc._TPC_BOX_Y = 3.16     # full height [m]
-fc._TPC_BOX_Z = 17.95    # full length [m]
+# NOTE on geometry: this box is only the DetectorDirected SAMPLING ENVELOPE
+# (it directs the mediator/chi toward ICARUS and bounds the vertex sampler).
+# The real two-cryostat geometry is enforced downstream by the GDML
+# volTPCActive sector cut in fc.upscatter_in_lar/signal_eepair_observables,
+# which operates on the composite ICARUS GDML (both C0 and C1 drift volumes).
+# So a single envelope spanning both cryostats + the 1.2 m argon-free gap is
+# fine here -- gap interactions are rejected by the sector cut. (The analytic
+# engine is different: there the box IS the target, so it uses the true
+# single-module box summed over ICARUS_MODULE_CENTERS_BNB -- see
+# analytic_NuMI_ICARUS.py.)
+fc._TPC_BOX_X = 7.20     # sampling-envelope width  [m] (spans both cryostats)
+fc._TPC_BOX_Y = 3.16     # sampling-envelope height [m]
+fc._TPC_BOX_Z = 17.95    # sampling-envelope length [m]
 # Sphere enclosing the farthest active-volume corner (~9.80 m).
 fc.R_LAR_INJECT = 10.5
 fc.SBND_POT = ICARUS_NUMI_POT   # folded into w_abs by run_channel

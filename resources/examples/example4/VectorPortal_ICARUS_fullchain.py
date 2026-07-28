@@ -86,13 +86,18 @@ V1_SIGNAL = PT(5923)
 #   Farthest corner from origin: 14.51 m  -> R_LAR_INJECT must be > 14.51 m.
 # The old value of 12.0 m was too small (missed TPC z-corners), causing the
 # chi bounded vertex distribution to sample only ~83% of the active z-range.
-R_LAR_INJECT = 15.0  # encloses all 8 TPC corners (max corner R = 14.51 m)
-# Tight bounding box dimensions that exactly enclose all 8 TPC sectors:
-#   X_BOX = 2*(2.84+1.48) = 8.64 m,  Y_BOX = 6.34 m,  Z_BOX = 2*(4.47+8.95) = 26.84 m
-# This box volume (1469 m^3) is 55% of the sphere (7238 m^3), giving better efficiency.
-_TPC_BOX_X = 8.64    # full width [m], covers ±4.32 m in x
-_TPC_BOX_Y = 6.34    # full height [m]
-_TPC_BOX_Z = 26.84   # full length [m], covers ±13.42 m in z
+# ICARUS is TWO separate cryostats (C0, C1) with a ~1.2 m argon-free gap, NOT
+# one monolithic box. _TPC_BOX is ONE active module (3.0 x 3.16 x 17.95 m from
+# sbn_geometry ICARUS_C0/C1); the analytic engine is called once per module
+# center (ICARUS_MODULE_CENTERS_BNB) and the yields are summed. The old single
+# 8.64 x 6.34 x 26.84 m box (1469 m^3) was the warm-vessel envelope -> 2051 t of
+# phantom argon (4.3x the true 476 t across both modules), inflating every rate.
+R_LAR_INJECT = 10.0  # encloses one module's far corner (9.23 m)
+_TPC_BOX_X = 3.00    # single-module x-extent [m]  (covers ±1.50 m)
+_TPC_BOX_Y = 3.16    # single-module y-extent [m]
+_TPC_BOX_Z = 17.95   # single-module z-extent [m]  (covers ±8.975 m)
+# Two active-module centers in the BNB frame [m] (sbn_geometry ICARUS_C0/C1).
+ICARUS_MODULE_CENTERS_BNB = [(-2.10215, -0.202, 600.0), (2.10215, -0.202, 600.0)]
 LAR_TARGET_PDGS = {1000180400}               # Ar40 (upscatter target in LAr)
 events_to_inject = 10_000
 

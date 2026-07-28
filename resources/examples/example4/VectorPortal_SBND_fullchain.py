@@ -623,7 +623,9 @@ def main():
 
     # --- AUTHORITATIVE analytic engine (default) ------------------------------
     if args.engine == "analytic":
-        import sys, sbnd_analytic
+        import sys, os as _o
+        from siren import _util as _u
+        sbnd_analytic = _u.load_module('AnalyticRate', _o.path.join(_u.resource_package_dir(), 'processes', 'DarkNewsTables', 'AnalyticRate.py'))
         res = sbnd_analytic.report(sys.modules[__name__], "SBND vector ->e+e-",
                                    vector=True, n_dec=args.n_dec)
         os.makedirs("output", exist_ok=True)
