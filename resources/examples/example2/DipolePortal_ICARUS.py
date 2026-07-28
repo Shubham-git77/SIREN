@@ -29,7 +29,13 @@ experiment = "ICARUS"
 
 import os
 
-base = "/home/shubham/SIREN/resources/detectors/ICARUS/ICARUS-v1"
+base = os.environ.get(
+    "ICARUS_MODEL_DIR",
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "detectors", "ICARUS", "ICARUS-v1",
+    ),
+)
 
 print("\n===== DEBUG START =====")
 print("Base path:", base)

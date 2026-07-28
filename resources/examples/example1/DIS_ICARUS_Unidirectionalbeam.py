@@ -10,7 +10,13 @@ events_to_inject = int(1e5)
 # -------------------------------
 # Load ICARUS detector (MANUAL)
 # -------------------------------
-base = "/home/shubham/SIREN/resources/detectors/ICARUS/ICARUS-v1"
+base = os.environ.get(
+    "ICARUS_MODEL_DIR",
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "detectors", "ICARUS", "ICARUS-v1",
+    ),
+)
 
 detector_model = siren.detector.DetectorModel(
     os.path.join(base, "densities.dat"),
