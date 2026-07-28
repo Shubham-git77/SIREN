@@ -240,7 +240,13 @@ V1_SIG_TYPE    = PT(PDGID_V1_SIGNAL)
 # Detector
 # ---------------------------------------------------------------------------
 print("Loading ICARUS detector model ...")
-base = "/home/shubham/SIREN/resources/detectors/ICARUS/ICARUS-v1"
+base = os.environ.get(
+    "ICARUS_MODEL_DIR",
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "detectors", "ICARUS", "ICARUS-v1",
+    ),
+)
 detector_model = siren.detector.DetectorModel(
     os.path.join(base, "densities.dat"),
     os.path.join(base, "materials.dat"),
