@@ -7,7 +7,13 @@ Saves output/credible_region_m25.npz (chi2_scalar25, chi2_pseudo25) on the SAME
 import os, importlib.util, numpy as np
 os.environ.setdefault("DK2NU_FILE", "/home/shubham/nubeamHighSample.dk2nu.root")
 HERE = os.path.dirname(os.path.abspath(__file__)); os.chdir(HERE)
-PKG  = "/home/shubham/siren_venv/lib/python3.12/site-packages/siren/resources/processes/DarkNewsTables"
+PKG  = os.environ.get(
+    "SIREN_DNT_DIR",
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "processes", "DarkNewsTables",
+    ),
+)
 
 def load(path, name):
     import sys
