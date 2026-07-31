@@ -83,16 +83,25 @@ def main(argv=None):
     ap.add_argument("--bins", type=int, default=60)
     ap.add_argument("--output",
                     default="output/timing_flight_geometry_sbnd_icarus.png")
+    ap.add_argument("--sbnd-csv", help="override the SBND input CSV")
+    ap.add_argument("--icarus-csv", help="override the ICARUS input CSV")
     args = ap.parse_args(argv)
 
-    fig, axes = plt.subplots(len(DETECTORS), 3, figsize=(16.5, 8.6),
+    # Defaults are the 50k CSVs; the overrides let a lower-statistics run
+    # (e.g. the *_3k / *_1500 reruns) be plotted without touching them.
+    overrides = {"SBND": args.sbnd_csv, "ICARUS": args.icarus_csv}
+    detectors = [(name, overrides.get(name) or csv, zwidth, color)
+                 for name, csv, zwidth, color in DETECTORS]
+
+    fig, axes = plt.subplots(len(detectors), 3, figsize=(16.5, 8.6),
                              constrained_layout=True)
     axes = np.atleast_2d(axes)
 
     print("m4 = %.3f GeV;  s = L - L_center (radius from target, not z)" % args.m4)
     print("-" * 92)
 
-    for row, (name, csv, zwidth, color) in enumerate(DETECTORS):
+    nloaded = []
+    for row, (name, csv, zwidth, color) in enumerate(detectors):
         if not os.path.exists(csv):
             for c in range(3):
                 axes[row, c].text(0.5, 0.5, "missing %s" % csv, ha="center",
@@ -100,6 +109,7 @@ def main(argv=None):
             continue
 
         Lu, Ld, flight, E, beta, w = _load(csv, args.m4)
+        nloaded.append((name, len(w)))
         # Anchor s = 0 at the middle of the upscatter support: upscatter is
         # confined to the argon, so this is the active volume's centre.
         lo, hi = _wquantile(Lu, w, 0.001), _wquantile(Lu, w, 0.999)
@@ -173,9 +183,12 @@ def main(argv=None):
                  float(np.median(beta)), 100 * esc))
     print("-" * 92)
 
+    # Report the event counts actually loaded rather than a hardcoded figure --
+    # the same script now serves the 50k runs and the lower-statistics reruns.
+    counts = ", ".join("%s %d" % (name, n) for name, n in nloaded)
     fig.suptitle(r"BNB DarkNews HNL (dipole, $m_4=%.2f$ GeV): in-argon production "
-                 "and decay geometry -- 50k events/detector, weight-summed shapes"
-                 % args.m4, fontsize=12)
+                 "and decay geometry -- %s events, weight-summed shapes"
+                 % (args.m4, counts), fontsize=12)
     out = os.path.abspath(args.output)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     fig.savefig(out, dpi=150)
