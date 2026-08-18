@@ -40,7 +40,18 @@ from siren.Weighter import Weighter
 # ------------------------------------------------------------------ #
 #  Load physics modules (MesonProduction + DarkPrimakoff + Dk2nuReader) #
 # ------------------------------------------------------------------ #
-_PROC_DIR = os.path.join(_util.resource_package_dir(), "processes", "DarkNewsTables")
+# SIREN_DNT_DIR overrides where the physics modules come from, exactly as
+# scan_brute_grid.py / mcmc_fit.py already honour it. Without it these
+# configs silently load AnalyticRate/MesonProduction/DarkPrimakoff from the
+# INSTALLED siren package rather than this source tree, so edits to those
+# modules have no effect here while appearing to work everywhere else --
+# which is how the 2026-08-17 vector runs still picked up CALIB_VECTOR=2412
+# from the installed copy hours after it was retired in the source.
+_PROC_DIR = os.environ.get(
+    "SIREN_DNT_DIR",
+    os.path.join(_util.resource_package_dir(), "processes", "DarkNewsTables"))
+_AR = _util.load_module("DuttaKim_AnalyticRate",
+                       os.path.join(_PROC_DIR, "AnalyticRate.py"))
 _MESON = _util.load_module("DuttaKim_MesonProduction",
                            os.path.join(_PROC_DIR, "MesonProduction.py"))
 _DK = _util.load_module("DuttaKim_Dk2nuReader",
@@ -108,8 +119,13 @@ events_to_inject = 10_000
 # Reconstruction cuts (single-photon / single-shower selection)
 E_VIS_THRESHOLD = 0.140
 
-# ICARUS NuMI exposure (SBN programme nominal, neutrino mode).
-ICARUS_POT = 6e20
+# ICARUS BNB exposure. This config runs the BNB chain (geometry is
+# ICARUS_MODULE_CENTERS_BNB at z = 600 m), so the NuMI label this
+# carried was wrong; see sbn_exposures.py.
+from sbn_exposures import ICARUS_BNB_POT as _EXPOSURE  # single source of truth;
+# was hardcoded here (see sbn_exposures.py for why the old ICARUS value
+# was both duplicated and mislabelled as a NuMI exposure).
+ICARUS_POT = _EXPOSURE
 #
 # Energy-dependent detection efficiency eps(E_vis). NOTE: the digitized MiniBooNE
 # single-photon efficiency (mb_eff, ~0.1) does NOT apply here -- ICARUS is a LArTPC
@@ -118,8 +134,28 @@ ICARUS_POT = 6e20
 _EFF_TABLE = None
 
 def detection_efficiency(E_vis_gev):
+    """EM-shower reconstruction efficiency for a LArTPC.
+
+    Returning 1.0 here (the old behaviour when _EFF_TABLE is None) is not a
+    neutral default -- it silently claims perfect detection, making absolute
+    rates ~10x optimistic against the 0.10 single-photon efficiency the reach
+    study actually applies. There IS a physical model available: AnalyticRate's
+    generic-LArTPC turn-on (RECO_PLATEAU 0.90, 50% point 50 MeV, hard threshold
+    30 MeV), driven by the LAr medium and therefore common to SBND/ICARUS.
+    Use it instead of 1.0.
+
+    NOTE this is the RECO turn-on only. The full lartpc efficiency also carries
+    a geometric pair-conversion + shower-containment factor, which depends on
+    the scatter vertex and so cannot be computed from E_vis alone -- the
+    analytic engine applies it via eff_mode="lartpc". Prefer that path for
+    absolute rates; this function is the energy-dependent part for callers
+    that only have E_vis.
+    """
     if _EFF_TABLE is None:
-        return 1.0
+        # NB load by explicit path, like every other sibling module here. A plain
+        # "import AnalyticRate" is intercepted by SIREN's resource loader, which
+        # does not know the name and raises ImportError.
+        return float(np.asarray(_AR.reco_turnon(np.asarray(E_vis_gev, float))))
     E = np.asarray(_EFF_TABLE)[:, 0]; eff = np.asarray(_EFF_TABLE)[:, 1]
     return float(np.interp(E_vis_gev, E, eff, left=eff[0], right=eff[-1]))
 
@@ -579,13 +615,63 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject, deb
     return Ev, cs, wv
 
 
+def _warn_sampler_normalisation():
+    """Print the normalisation caveat before any SIREN-sampler run.
+
+    The SBND scripts expose --engine {analytic,siren} and default to the
+    analytic estimator. These scripts have no such switch: they only run the
+    SIREN directed importance sampler, which AnalyticRate.py documents as
+    over-estimating these rates 60-400x through an uncancelled production
+    boost-Jacobian. Silence would let a reader take the printed absolute
+    rates at face value, so say it out loud every run.
+
+    This became more important on 2026-08-17: CALIB_VECTOR (=2412) used to sit
+    in this path absorbing part of that error, and it has been retired now the
+    production normalisation is derived analytically. The sampler's own
+    normalisation error is therefore no longer masked.
+    """
+    import sys
+    print("=" * 74, file=sys.stderr)
+    print(" WARNING: this script uses the SIREN directed importance sampler.", file=sys.stderr)
+    print(" Its ABSOLUTE rates are known to be over-estimated 60-400x", file=sys.stderr)
+    print(" (uncancelled production boost-Jacobian; see AnalyticRate.py).", file=sys.stderr)
+    print(" Shapes and relative channel weights are usable; absolute", file=sys.stderr)
+    print(" normalisation is NOT. For trustworthy rates use:", file=sys.stderr)
+    print("   ", file=sys.stderr)
+    print("=" * 74, file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--channel", choices=list(CHANNELS) + ["all"], default="all")
     ap.add_argument("--n-events", type=int, default=events_to_inject)
     ap.add_argument("--debug", action="store_true",
                     help="Print per-vertex LAr sector diagnostics for first 5 events")
+    ap.add_argument("--engine", choices=["analytic", "siren"], default="analytic",
+                    help="'analytic' (default, AUTHORITATIVE sigma*N*chord rate) or "
+                         "'siren' (directed-sampler injection; OVER-estimates ~60-400x)")
+    ap.add_argument("--n-dec", type=int, default=400,
+                    help="(analytic engine) decays sampled per meson")
     args = ap.parse_args()
+
+    # --- AUTHORITATIVE analytic engine (default) ---------------------------
+    # The sampler path below over-estimates 60-400x. For MiniBooNE this is
+    # checkable: the analytic engine predicts 551.6 events at the paper's
+    # Table I coupling against a measured excess of 533.9 (ratio 1.03).
+    if args.engine == "analytic":
+        res = _AR.report_detector(sys.modules[__name__], "ICARUS scalar phi->gamma",
+                                  "icarus", vector=False, n_dec=args.n_dec)
+        os.makedirs("output", exist_ok=True)
+        _out = "output/ICARUS_scalar_analytic.npz"
+        np.savez(_out, **{f"{n}_E": res[n][0] for n in res},
+                       **{f"{n}_w": res[n][1] for n in res})
+        print("  Saved -> %s" % _out)
+        return
+
+    # Past this point we are on the SIREN sampler, whose absolute rates are
+    # unreliable; say so explicitly rather than letting the numbers stand.
+    _warn_sampler_normalisation()
+
 
     print("Loading ICARUS detector (GDML) ...")
     detector_model = siren.utilities.load_detector("SBN", detector="ICARUS")
@@ -634,7 +720,7 @@ def main():
     c_bins  = np.linspace(-1.0, 1.0, 61)   # 60 bins, full cos theta range
     cz_bins = np.linspace(0.80, 1.0, 41)   # 40 bins, forward zoom
     colors  = {"K_e": "C0", "K_mu": "C1", "pi_e": "C2", "pi_mu": "C3"}
-    pot_note = r"(%.0e POT, ICARUS NuMI)" % ICARUS_POT
+    pot_note = r"(%.2e POT, ICARUS BNB)" % ICARUS_POT   # BNB, not NuMI
 
     fig, ax = plt.subplots(1, 3, figsize=(18, 5))
     for n in per_channel:

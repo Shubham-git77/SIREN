@@ -42,16 +42,32 @@ SA = load(os.path.join(PKG, "AnalyticRate.py"), "AnalyticRate")
 CFG = "VectorPortal_MiniBooNE_fullchain.py"
 
 # ---- data + vector cos template ----
-DATA_N = np.array([302,402,333,279,189,168,134,118,81,83,75,84,57,61,38,52,26,19,19],float)
-DATA_E = np.array([225,275,325,375,425,475,525,575,625,675,725,775,825,875,925,975,1025,1075,1125],float)
-DATA_ERR=np.array([36,41,38,35,28,27,25,23,18,19,18,19,15,18,13,15,11,12,10],float)
-BKG    = np.array([255,320,300,250,175,150,120,105,76,78,70,76,52,55,35,47,24,18,17],float)
-EBINS  = np.concatenate([[DATA_E[0]-25], DATA_E+25]) / 1e3
-EXCESS = DATA_N-BKG; INV2 = 1.0/DATA_ERR**2
+# MiniBooNE nu-mode data now comes from the shared module. It used to be a
+# 19-bin digitization inlined here, which matched no official release and
+# silently diverged from the corrected 11-bin HEPData binning used by
+# scan_brute_grid.py / mcmc_fit.py -- results from the two were not
+# comparable. ERR_MODE=quad adds the MiniBooNE background systematics the
+# paper says it used; ERR_MODE=stat (default) keeps the historical
+# stat-only weighting.
+import os as _os
+import miniboone_data as MB
+DATA_E, DATA_N, DATA_ERR, BKG, EBINS = MB.DATA_E, MB.DATA_N, MB.DATA_ERR, MB.BKG, MB.EBINS
+ERR_MODE = _os.environ.get("ERR_MODE", "stat")
+EXCESS = MB.EXCESS
+INV2 = 1.0 / MB.errors(ERR_MODE) ** 2
+# COS_WEIGHT: "off" drops the angular term, "on"/1 keeps it, a number scales its
+# errors. The template is a pixel-extracted shape of the paper's OWN Fig.2
+# vector signal band with an invented error -- on the scalar side the
+# equivalent term supplied more chi2 leverage than the real data and drove the
+# fitted mass. Make it switchable rather than assumed.
+COS_WEIGHT = os.environ.get("COS_WEIGHT", "1")
+COS_OFF = (COS_WEIGHT == "off")
+_cos_scale = 1.0 if (COS_OFF or COS_WEIGHT == "on") else float(COS_WEIGHT)
+OUT_DIR = os.environ.get("MCMC_OUT", "output")
 ct = json.load(open("cos_template_vector_nu.json"))
 COS_TGT = np.array(ct["shape"]); COS_TGT/=COS_TGT.sum()
 NCB=len(COS_TGT); COS_EDGES=np.linspace(-1,1,NCB+1)
-COS_SIG = np.sqrt(COS_TGT*(1-COS_TGT)/320.0)+0.01
+COS_SIG = (np.sqrt(COS_TGT*(1-COS_TGT)/320.0)+0.01) * _cos_scale
 WIN=(0.14,0.30)
 
 NDEC=100
@@ -61,7 +77,7 @@ RNG = np.random.default_rng(5)
 
 # ---- response grid over m_V2 (only free mass); Ehist(calibrated) + cos shape ----
 import sys
-RESP = "output/mcmc_vector_response.npz"
+RESP = os.path.join(OUT_DIR,"mcmc_vector_response.npz")
 if os.path.exists(RESP):
     print("[vector] loading cached response grid %s (skip precompute)"%RESP); sys.stdout.flush()
     _r=np.load(RESP); EHIST=_r["EHIST"]; CHIST=_r["CHIST"]
@@ -103,7 +119,7 @@ def logprob(th):
     Ev = interp(EHIST, mv2/1e3) * (P/P0)**2
     chi2_E = np.sum((EXCESS-Ev)**2*INV2)
     cs = interp(CHIST, mv2/1e3); s=cs.sum(); cs=cs/s if s>0 else cs
-    chi2_c = np.sum((COS_TGT-cs)**2/COS_SIG**2)
+    chi2_c = 0.0 if COS_OFF else np.sum((COS_TGT-cs)**2/COS_SIG**2)
     return -0.5*(chi2_E+chi2_c)
 
 def run_mcmc(nwalkers=32, nsteps=4000, seed=1):
@@ -130,7 +146,7 @@ def run_mcmc(nwalkers=32, nsteps=4000, seed=1):
 
 print("[vector] running MCMC ..."); sys.stdout.flush()
 chain=run_mcmc(); burn=chain.shape[0]//3; flat=chain[burn:].reshape(-1,2)
-np.savez("output/mcmc_vector_chain.npz", chain=chain, flat=flat, mV2_grid=MV2_GRID, P0=P0)
+np.savez(os.path.join(OUT_DIR,"mcmc_vector_chain.npz"), chain=chain, flat=flat, mV2_grid=MV2_GRID, P0=P0)
 
 # corner (2x2)
 labels=[r"$m_{V_2}$ [MeV]", r"$\log_{10}(\epsilon_1\epsilon_2 g'^2/4\pi)$"]
@@ -148,7 +164,7 @@ for i in range(2):
         if i==1: a.set_xlabel(labels[j],fontsize=9)
         if j==0 and i==1: a.set_ylabel(labels[i],fontsize=9)
 fig.suptitle("MCMC posterior -- Vector double-mediator (MiniBooNE nu E_vis + cos-theta)",fontsize=11)
-fig.tight_layout(); fig.savefig("output/mcmc_vector_corner.png",dpi=110)
+fig.tight_layout(); fig.savefig(os.path.join(OUT_DIR,"mcmc_vector_corner.png"),dpi=110)
 
 # (m_V2, product) posterior region
 fig,ax=plt.subplots(figsize=(7,6))
@@ -164,7 +180,7 @@ ax.set_xscale("log")
 ax.set_xlabel(r"$m_{V_2}$ [MeV]"); ax.set_ylabel(r"$\log_{10}(\epsilon_1\epsilon_2 g'^2/4\pi)$")
 ax.set_title("Vector MCMC posterior (MiniBooNE): 68%/95% region\n[Fig.3-LEFT analog; abs. axis via empirical CALIB_VECTOR]")
 ax.legend(); ax.grid(alpha=0.3)
-fig.tight_layout(); fig.savefig("output/mcmc_vector_mV2_product.png",dpi=120)
+fig.tight_layout(); fig.savefig(os.path.join(OUT_DIR,"mcmc_vector_mV2_product.png"),dpi=120)
 print("wrote output/mcmc_vector_{corner,mV2_product}.png")
 print("[vector] DONE. m_V2 = %.0f +/- %.0f MeV ; log10 product = %.2f +/- %.2f"
       %(np.median(flat[:,0]),np.std(flat[:,0]),np.median(flat[:,1]),np.std(flat[:,1])))

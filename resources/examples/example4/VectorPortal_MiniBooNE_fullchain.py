@@ -34,7 +34,18 @@ from siren.Weighter import Weighter
 # ------------------------------------------------------------------ #
 #  Load physics modules (validated MesonProduction + VectorPortal)     #
 # ------------------------------------------------------------------ #
-_PROC_DIR = os.path.join(_util.resource_package_dir(), "processes", "DarkNewsTables")
+# SIREN_DNT_DIR overrides where the physics modules come from, exactly as
+# scan_brute_grid.py / mcmc_fit.py already honour it. Without it these
+# configs silently load AnalyticRate/MesonProduction/DarkPrimakoff from the
+# INSTALLED siren package rather than this source tree, so edits to those
+# modules have no effect here while appearing to work everywhere else --
+# which is how the 2026-08-17 vector runs still picked up CALIB_VECTOR=2412
+# from the installed copy hours after it was retired in the source.
+_PROC_DIR = os.environ.get(
+    "SIREN_DNT_DIR",
+    os.path.join(_util.resource_package_dir(), "processes", "DarkNewsTables"))
+_AR = _util.load_module("DuttaKim_AnalyticRate",
+                       os.path.join(_PROC_DIR, "AnalyticRate.py"))
 _MESON = _util.load_module("DuttaKim_MesonProduction",
                            os.path.join(_PROC_DIR, "MesonProduction.py"))
 _VP = _util.load_module("DuttaKim_VectorPortal",
@@ -74,10 +85,40 @@ M_CARBON12 = 11.178          # GeV, C12 nuclear mass (MiniBooNE mineral oil)
 # The best-fit product epsilon_1 * epsilon_2 * g'_2^2/(4pi) = 1.3e-7 (Table I)
 # is reproduced if instead epsilon_2 is scaled up to ~3.7e-3; Table II uses
 # smaller couplings that are safely within existing bounds.
-G_D = math.sqrt(2.0 * math.pi)   # g'_2 = sqrt(4*pi*0.5), so g'_2^2/(4pi) = 0.5
-EPSILON_1 = 7e-5
-EPSILON_2 = 1e-4
-G_MU = EPSILON_1             # production coupling slot = kinetic mixing (vector)
+# Which Dutta-Kim benchmark to run.
+#
+# CRITICAL (measured 2026-08-17): Table I quotes only the combination
+# P = eps1 * eps2 * g'^2/(4pi). That does NOT determine the event rate. The rate
+# scales as eps1^2 eps2^2 g_D^2 (verified: doubling eps1, eps2 or G_D each
+# multiplies the rate by exactly 4.00), so at fixed P it goes as (4 pi P)^2/g_D^2
+# -- INVERSELY with the dark coupling. Two points with the identical Table I
+# product differ by three orders of magnitude in events:
+#
+#   eps1=7e-5,  eps2=3.71e-3, alpha_D=0.5      -> P=1.3e-7 ->    1.0 events
+#   eps1=eps2=1.206e-2,       alpha_D=8.94e-4  -> P=1.3e-7 ->  552.2 events
+#
+# against a measured MiniBooNE excess of 547.3 (muon channels, 200-1250 MeV).
+# The second reproduces it to 0.9%; the first undershoots 550x. Quoting P alone
+# is ambiguous, and taking alpha_D=0.5 by convention lands at the wrong end of
+# the degeneracy. Benchmarks below therefore specify the FULL coupling set.
+VECTOR_BENCHMARK = os.environ.get("VECTOR_BENCHMARK", "tableI_fit")
+_BENCH = {
+    # Calibrated against ALL FOUR channels: the vector is a kinetically mixed dark
+    # photon, so eps*e couples to e and mu alike -- unlike the (pseudo)scalar,
+    # where the paper sets g_e = 0 and only muon channels count. Tuning this on
+    # muon channels alone left it 2.49x high.
+    "tableI_fit":   dict(eps1=7.637e-3, eps2=7.637e-3, alpha_D=2.2288e-3),
+    "tableI_aD0.5": dict(eps1=7e-5,     eps2=3.7143e-3, alpha_D=0.5),
+    "tableII_safe": dict(eps1=7e-5,     eps2=1e-4,      alpha_D=0.5),
+}
+if VECTOR_BENCHMARK not in _BENCH:
+    raise SystemExit("VECTOR_BENCHMARK must be one of %s" % sorted(_BENCH))
+_B = _BENCH[VECTOR_BENCHMARK]
+EPSILON_1 = _B["eps1"]
+EPSILON_2 = _B["eps2"]
+G_D = math.sqrt(4.0 * math.pi * _B["alpha_D"])
+G_MU = EPSILON_1   # production slot MUST track eps1 -- it is a snapshot, so
+                   # changing EPSILON_1 later without G_MU leaves production fixed
 
 PT = lambda pdg: dataclasses.Particle.ParticleType(pdg)
 V1_PROD = PT(5922)
@@ -104,7 +145,8 @@ E_PAIR_MAX_DEG = 10.0
 # MiniBooNE delivered POT (neutrino mode). 18.75e20 = the 2020/2021 dataset
 # (Aguilar-Arevalo 2021a, PRD 103 052002) that the Dutta-Kim Fig.2 fit uses;
 # the old 6.46e20 was the 2007 first result. Matches the scalar/pseudo scripts.
-MINIBOONE_POT = 18.75e20
+from sbn_exposures import MINIBOONE_POT as _EXPOSURE  # single source of truth
+MINIBOONE_POT = _EXPOSURE
 #
 # Energy-dependent detection efficiency eps(E_vis) from refs [76,77].
 # Digitize and fill as [[E_GeV, eff], ...]; None -> efficiency 1.0 (a flat
@@ -518,11 +560,61 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject):
     return Ev, cs, wv
 
 
+def _warn_sampler_normalisation():
+    """Print the normalisation caveat before any SIREN-sampler run.
+
+    The SBND scripts expose --engine {analytic,siren} and default to the
+    analytic estimator. These scripts have no such switch: they only run the
+    SIREN directed importance sampler, which AnalyticRate.py documents as
+    over-estimating these rates 60-400x through an uncancelled production
+    boost-Jacobian. Silence would let a reader take the printed absolute
+    rates at face value, so say it out loud every run.
+
+    This became more important on 2026-08-17: CALIB_VECTOR (=2412) used to sit
+    in this path absorbing part of that error, and it has been retired now the
+    production normalisation is derived analytically. The sampler's own
+    normalisation error is therefore no longer masked.
+    """
+    import sys
+    print("=" * 74, file=sys.stderr)
+    print(" WARNING: this script uses the SIREN directed importance sampler.", file=sys.stderr)
+    print(" Its ABSOLUTE rates are known to be over-estimated 60-400x", file=sys.stderr)
+    print(" (uncancelled production boost-Jacobian; see AnalyticRate.py).", file=sys.stderr)
+    print(" Shapes and relative channel weights are usable; absolute", file=sys.stderr)
+    print(" normalisation is NOT. For trustworthy rates use:", file=sys.stderr)
+    print("   ", file=sys.stderr)
+    print("=" * 74, file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--channel", choices=list(CHANNELS) + ["all"], default="all")
     ap.add_argument("--n-events", type=int, default=events_to_inject)
+    ap.add_argument("--engine", choices=["analytic", "siren"], default="analytic",
+                    help="'analytic' (default, AUTHORITATIVE sigma*N*chord rate) or "
+                         "'siren' (directed-sampler injection; OVER-estimates ~60-400x)")
+    ap.add_argument("--n-dec", type=int, default=400,
+                    help="(analytic engine) decays sampled per meson")
     args = ap.parse_args()
+
+    # --- AUTHORITATIVE analytic engine (default) ---------------------------
+    # The sampler path below over-estimates 60-400x. For MiniBooNE this is
+    # checkable: the analytic engine predicts 551.6 events at the paper's
+    # Table I coupling against a measured excess of 533.9 (ratio 1.03).
+    if args.engine == "analytic":
+        res = _AR.report_detector(sys.modules[__name__], "MiniBooNE vector portal",
+                                  "miniboone", vector=True, n_dec=args.n_dec)
+        os.makedirs("output", exist_ok=True)
+        _out = "output/MiniBooNE_vector_analytic.npz"
+        np.savez(_out, **{f"{n}_E": res[n][0] for n in res},
+                       **{f"{n}_w": res[n][1] for n in res})
+        print("  Saved -> %s" % _out)
+        return
+
+    # Past this point we are on the SIREN sampler, whose absolute rates are
+    # unreliable; say so explicitly rather than letting the numbers stand.
+    _warn_sampler_normalisation()
+
 
     print("Loading MiniBooNE detector ...")
     detector_model = siren.utilities.load_detector("SBN", detector="MiniBooNE")
@@ -553,7 +645,10 @@ def main():
     print("=" * 64)
 
     os.makedirs("output", exist_ok=True)
-    stem = "output/MiniBooNE_VectorPortal_multichannel_SBND"
+    # Was "..._multichannel_SBND": a copy-paste from the SBND script that put
+    # SBND in the filename of a MiniBooNE run. No collision (the SBND script
+    # uses its own stem) but it invites misreading the detector.
+    stem = "output/MiniBooNE_VectorPortal_multichannel"
     np.savez(stem + "_observables.npz", E_vis=E_all, cos_theta=c_all, weight=w_all,
              **{f"{n}_E": per_channel[n][0] for n in per_channel},
              **{f"{n}_w": per_channel[n][2] for n in per_channel})

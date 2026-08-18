@@ -34,7 +34,16 @@ from siren.Weighter import Weighter
 # ------------------------------------------------------------------ #
 #  Load physics modules (validated MesonProduction + VectorPortal)     #
 # ------------------------------------------------------------------ #
-_PROC_DIR = os.path.join(_util.resource_package_dir(), "processes", "DarkNewsTables")
+# SIREN_DNT_DIR overrides where the physics modules come from, exactly as
+# scan_brute_grid.py / mcmc_fit.py already honour it. Without it these
+# configs silently load AnalyticRate/MesonProduction/DarkPrimakoff from the
+# INSTALLED siren package rather than this source tree, so edits to those
+# modules have no effect here while appearing to work everywhere else --
+# which is how the 2026-08-17 vector runs still picked up CALIB_VECTOR=2412
+# from the installed copy hours after it was retired in the source.
+_PROC_DIR = os.environ.get(
+    "SIREN_DNT_DIR",
+    os.path.join(_util.resource_package_dir(), "processes", "DarkNewsTables"))
 _MESON = _util.load_module("DuttaKim_MesonProduction",
                            os.path.join(_PROC_DIR, "MesonProduction.py"))
 _VP = _util.load_module("DuttaKim_VectorPortal",
@@ -70,10 +79,40 @@ M_ARGON40 = 37.224           # GeV, Ar40 nuclear mass (SBND liquid argon)
 #   epsilon_2 = 1e-4   (V2 kinetic mixing: upscattering)
 #   g'_2^2/(4pi) = 0.5 (dark gauge coupling of V2 to chi-chi')
 #   -> G_D = sqrt(4*pi*0.5) = sqrt(2*pi)
-G_D = math.sqrt(2.0 * math.pi)   # g'_2^2/(4pi) = 0.5
-EPSILON_1 = 7e-5
-EPSILON_2 = 1e-4
-G_MU = EPSILON_1             # production coupling slot = kinetic mixing (vector)
+# Which Dutta-Kim benchmark to run.
+#
+# CRITICAL (measured 2026-08-17): Table I quotes only the combination
+# P = eps1 * eps2 * g'^2/(4pi). That does NOT determine the event rate. The rate
+# scales as eps1^2 eps2^2 g_D^2 (verified: doubling eps1, eps2 or G_D each
+# multiplies the rate by exactly 4.00), so at fixed P it goes as (4 pi P)^2/g_D^2
+# -- INVERSELY with the dark coupling. Two points with the identical Table I
+# product differ by three orders of magnitude in events:
+#
+#   eps1=7e-5,  eps2=3.71e-3, alpha_D=0.5      -> P=1.3e-7 ->    1.0 events
+#   eps1=eps2=1.206e-2,       alpha_D=8.94e-4  -> P=1.3e-7 ->  552.2 events
+#
+# against a measured MiniBooNE excess of 547.3 (muon channels, 200-1250 MeV).
+# The second reproduces it to 0.9%; the first undershoots 550x. Quoting P alone
+# is ambiguous, and taking alpha_D=0.5 by convention lands at the wrong end of
+# the degeneracy. Benchmarks below therefore specify the FULL coupling set.
+VECTOR_BENCHMARK = os.environ.get("VECTOR_BENCHMARK", "tableI_fit")
+_BENCH = {
+    # Calibrated against ALL FOUR channels: the vector is a kinetically mixed dark
+    # photon, so eps*e couples to e and mu alike -- unlike the (pseudo)scalar,
+    # where the paper sets g_e = 0 and only muon channels count. Tuning this on
+    # muon channels alone left it 2.49x high.
+    "tableI_fit":   dict(eps1=7.637e-3, eps2=7.637e-3, alpha_D=2.2288e-3),
+    "tableI_aD0.5": dict(eps1=7e-5,     eps2=3.7143e-3, alpha_D=0.5),
+    "tableII_safe": dict(eps1=7e-5,     eps2=1e-4,      alpha_D=0.5),
+}
+if VECTOR_BENCHMARK not in _BENCH:
+    raise SystemExit("VECTOR_BENCHMARK must be one of %s" % sorted(_BENCH))
+_B = _BENCH[VECTOR_BENCHMARK]
+EPSILON_1 = _B["eps1"]
+EPSILON_2 = _B["eps2"]
+G_D = math.sqrt(4.0 * math.pi * _B["alpha_D"])
+G_MU = EPSILON_1   # production slot MUST track eps1 -- it is a snapshot, so
+                   # changing EPSILON_1 later without G_MU leaves production fixed
 
 PT = lambda pdg: dataclasses.Particle.ParticleType(pdg)
 V1_PROD = PT(5922)
@@ -104,7 +143,8 @@ E_PAIR_MAX_DEG = 10.0
 # (Loaded after _MESON import below.)
 #
 # SBND BNB exposure (SBN programme nominal, neutrino mode).
-SBND_POT = 6.6e20
+from sbn_exposures import SBND_POT as _EXPOSURE  # single source of truth
+SBND_POT = _EXPOSURE
 #
 # Energy-dependent detection efficiency eps(E_vis) from refs [76,77].
 # Digitize and fill as [[E_GeV, eff], ...]; None -> efficiency 1.0 (a flat
@@ -625,9 +665,13 @@ def main():
     if args.engine == "analytic":
         import sys, os as _o
         from siren import _util as _u
-        sbnd_analytic = _u.load_module('AnalyticRate', _o.path.join(_u.resource_package_dir(), 'processes', 'DarkNewsTables', 'AnalyticRate.py'))
-        res = sbnd_analytic.report(sys.modules[__name__], "SBND vector ->e+e-",
-                                   vector=True, n_dec=args.n_dec)
+        # _PROC_DIR honours SIREN_DNT_DIR; resource_package_dir() hardcoded here
+        # bypassed it and loaded the INSTALLED AnalyticRate instead of this
+        # source tree, which is exactly the split that hid today's fixes.
+        sbnd_analytic = _u.load_module('AnalyticRate',
+                                       _o.path.join(_PROC_DIR, 'AnalyticRate.py'))
+        res = sbnd_analytic.report_detector(sys.modules[__name__], "SBND vector ->e+e-", "sbnd",
+                                           vector=True, n_dec=args.n_dec)
         os.makedirs("output", exist_ok=True)
         np.savez("output/SBND_vector_analytic.npz",
                  **{f"{n}_E": res[n][0] for n in res},

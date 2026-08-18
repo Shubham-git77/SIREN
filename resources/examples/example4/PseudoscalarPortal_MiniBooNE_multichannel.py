@@ -40,7 +40,18 @@ from siren.Weighter import Weighter
 # ------------------------------------------------------------------ #
 #  Load physics modules (MesonProduction + DarkPrimakoff + Dk2nuReader) #
 # ------------------------------------------------------------------ #
-_PROC_DIR = os.path.join(_util.resource_package_dir(), "processes", "DarkNewsTables")
+# SIREN_DNT_DIR overrides where the physics modules come from, exactly as
+# scan_brute_grid.py / mcmc_fit.py already honour it. Without it these
+# configs silently load AnalyticRate/MesonProduction/DarkPrimakoff from the
+# INSTALLED siren package rather than this source tree, so edits to those
+# modules have no effect here while appearing to work everywhere else --
+# which is how the 2026-08-17 vector runs still picked up CALIB_VECTOR=2412
+# from the installed copy hours after it was retired in the source.
+_PROC_DIR = os.environ.get(
+    "SIREN_DNT_DIR",
+    os.path.join(_util.resource_package_dir(), "processes", "DarkNewsTables"))
+_AR = _util.load_module("DuttaKim_AnalyticRate",
+                       os.path.join(_PROC_DIR, "AnalyticRate.py"))
 _MESON = _util.load_module("DuttaKim_MesonProduction",
                            os.path.join(_PROC_DIR, "MesonProduction.py"))
 _DK = _util.load_module("DuttaKim_Dk2nuReader",
@@ -103,7 +114,8 @@ E_VIS_THRESHOLD = 0.140
 # MiniBooNE BNB exposure (neutrino mode); the 320 single-photon excess is quoted
 # at 18.75e20 POT (Aguilar-Arevalo et al. 2021, PRD 103 052002). Was erroneously
 # 6.46e20 (inconsistent with the scalar/vector scripts) -> fixed 2026-07-05.
-MINIBOONE_POT = 18.75e20
+from sbn_exposures import MINIBOONE_POT as _EXPOSURE  # single source of truth
+MINIBOONE_POT = _EXPOSURE
 #
 # Energy-dependent MiniBooNE single-photon detection efficiency eps(E_vis~E_gamma).
 # Digitized from the panorama review arXiv:2308.02543 (from MiniBooNE single-photon
@@ -518,13 +530,63 @@ def run_channel(name, dk2nu_data, detector_model, n_events=events_to_inject, deb
     return Ev, cs, wv
 
 
+def _warn_sampler_normalisation():
+    """Print the normalisation caveat before any SIREN-sampler run.
+
+    The SBND scripts expose --engine {analytic,siren} and default to the
+    analytic estimator. These scripts have no such switch: they only run the
+    SIREN directed importance sampler, which AnalyticRate.py documents as
+    over-estimating these rates 60-400x through an uncancelled production
+    boost-Jacobian. Silence would let a reader take the printed absolute
+    rates at face value, so say it out loud every run.
+
+    This became more important on 2026-08-17: CALIB_VECTOR (=2412) used to sit
+    in this path absorbing part of that error, and it has been retired now the
+    production normalisation is derived analytically. The sampler's own
+    normalisation error is therefore no longer masked.
+    """
+    import sys
+    print("=" * 74, file=sys.stderr)
+    print(" WARNING: this script uses the SIREN directed importance sampler.", file=sys.stderr)
+    print(" Its ABSOLUTE rates are known to be over-estimated 60-400x", file=sys.stderr)
+    print(" (uncancelled production boost-Jacobian; see AnalyticRate.py).", file=sys.stderr)
+    print(" Shapes and relative channel weights are usable; absolute", file=sys.stderr)
+    print(" normalisation is NOT. For trustworthy rates use:", file=sys.stderr)
+    print("   ", file=sys.stderr)
+    print("=" * 74, file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--channel", choices=list(CHANNELS) + ["all"], default="all")
     ap.add_argument("--n-events", type=int, default=events_to_inject)
     ap.add_argument("--debug", action="store_true",
                     help="(reserved) per-vertex diagnostics")
+    ap.add_argument("--engine", choices=["analytic", "siren"], default="analytic",
+                    help="'analytic' (default, AUTHORITATIVE sigma*N*chord rate) or "
+                         "'siren' (directed-sampler injection; OVER-estimates ~60-400x)")
+    ap.add_argument("--n-dec", type=int, default=400,
+                    help="(analytic engine) decays sampled per meson")
     args = ap.parse_args()
+
+    # --- AUTHORITATIVE analytic engine (default) ---------------------------
+    # The sampler path below over-estimates 60-400x. For MiniBooNE this is
+    # checkable: the analytic engine predicts 551.6 events at the paper's
+    # Table I coupling against a measured excess of 533.9 (ratio 1.03).
+    if args.engine == "analytic":
+        res = _AR.report_detector(sys.modules[__name__], "MiniBooNE pseudoscalar a->gamma",
+                                  "miniboone", vector=False, n_dec=args.n_dec)
+        os.makedirs("output", exist_ok=True)
+        _out = "output/MiniBooNE_pseudo_analytic.npz"
+        np.savez(_out, **{f"{n}_E": res[n][0] for n in res},
+                       **{f"{n}_w": res[n][1] for n in res})
+        print("  Saved -> %s" % _out)
+        return
+
+    # Past this point we are on the SIREN sampler, whose absolute rates are
+    # unreliable; say so explicitly rather than letting the numbers stand.
+    _warn_sampler_normalisation()
+
 
     print("Loading MiniBooNE detector ...")
     detector_model = siren.utilities.load_detector("SBN", detector="MiniBooNE")

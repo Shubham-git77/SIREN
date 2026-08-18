@@ -31,11 +31,45 @@ N_AR = 2.1036e22                          # argon nuclei / cm^3 (rho=1.3954 g/cc
 #                eff = P_convert&contain(SBND geometry) * reco_turnon_LAr(E).
 # -----------------------------------------------------------------------------
 
-# --- (mb) MiniBooNE single-photon selection efficiency placeholder -----------
-_EE = np.array([0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.90])
-_EF = np.array([0.089, 0.135, 0.139, 0.131, 0.123, 0.116, 0.106, 0.102])
+# --- (mb) MiniBooNE single-photon (gamma/electron) selection efficiency ------
+# CORRECTED 2026-08-10: this is the OFFICIAL MiniBooNE table (2012 nue/nuebar
+# data release, eg_effs.csv -- efficiency vs GENERATED gamma/electron energy,
+# cited by Wang/Alvarez-Ruso/Nieves arXiv:1407.6060 Fig.2 as ref [20], the same
+# efficiency source the Dutta-Kim paper cites as ref [77]). Verified: the prior
+# table matched this exactly up to 850 MeV (was NOT fabricated) but was
+# truncated there and clamped flat above it via np.interp(right=_EF[-1]).
+# The efficiency actually keeps falling sharply above ~900 MeV (0.102 -> 0.026
+# by 2000 MeV, a 4x drop) which was completely missing. Since the fit's data
+# now extends to a 2250 MeV overflow bin, this flat high-energy clamp was
+# giving high-E events ~4x too much weight -- a strong candidate for biasing
+# the fitted m_Zp upward.
+_EE = np.array([0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85,
+                 0.95, 1.05, 1.20, 1.40, 1.60, 1.80, 2.00])
+_EF = np.array([0.000, 0.089, 0.135, 0.139, 0.131, 0.123, 0.116, 0.106, 0.102,
+                 0.095, 0.089, 0.082, 0.073, 0.067, 0.052, 0.026])
+# The official table stops at 2 GeV, but the corrected E_vis binning has an
+# overflow bin running to 3 GeV, so something has to be said about 2-3 GeV.
+# Clamping at the last value (the previous behaviour, right=_EF[-1]) freezes
+# the efficiency at 0.026 exactly where the measured curve is falling fastest
+# -- it halves every 0.20 GeV over the last two tabulated points -- and that
+# overstates 3 GeV acceptance by a factor ~32. It is the same mistake as the
+# original clamp at 850 MeV, one bin further out.
+#
+# Instead continue the MEASURED trend: log-linear in E, with the slope taken
+# from the last two tabulated points (d ln eff/dE = -3.466 /GeV). That is an
+# extrapolation, not data, but it is derived from the curve's own behaviour
+# rather than invented, and it goes the physically right way -- MiniBooNE's
+# nu_e CCQE acceptance does not plateau at 3 GeV, where the BNB flux is
+# essentially gone. Beyond the extrapolation range efficiency is zero.
+_EFF_TAIL_SLOPE = np.log(_EF[-1] / _EF[-2]) / (_EE[-1] - _EE[-2])   # /GeV, negative
+_EFF_TAIL_EMAX = 3.0                                                # GeV, data edge
+
+
 def eff_vec(E):
-    e = np.interp(E, _EE, _EF, left=_EF[0], right=_EF[-1])
+    E = np.asarray(E, float)
+    e = np.interp(E, _EE, _EF, left=0.0, right=np.nan)
+    tail = _EF[-1] * np.exp(_EFF_TAIL_SLOPE * (E - _EE[-1]))
+    e = np.where(np.isnan(e), np.where(E <= _EFF_TAIL_EMAX, tail, 0.0), e)
     return np.where(E >= 0.140, e, 0.0)
 
 # --- (mb, vector e+e-) MiniBooNE electron-like (nu_e) efficiency --------------
@@ -377,6 +411,80 @@ def analytic_vec(S, name, n_dec=400, seed=7, return_cos=False, eff_mode="mb",
     if return_cos:
         return np.concatenate(Eh), np.concatenate(Wh), np.concatenate(Ch)
     return np.concatenate(Eh), np.concatenate(Wh)
+
+
+def report_detector(S, label, detector, vector=False, n_dec=400, eff_mode=None,
+                    meson_fn=None):
+    """Authoritative analytic rate for ANY of the three detectors.
+
+    report() above only ever handled SBND: it calls analytic_sp/analytic_vec,
+    whose defaults are the SBND box, S.SBND_POT and the synthetic BNB flux. That
+    left MiniBooNE and ICARUS with no analytic path at all, so their scripts
+    could only run the directed sampler -- which over-estimates 60-400x. That is
+    why their plots showed 1e4-1e7 events where the physical answer is ~5e2.
+
+    detector:
+      "miniboone" -> sphere/carbon geometry, MINIBOONE_POT, analytic_*_mb
+      "sbnd"      -> box/argon, SBND_POT (the historical report() behaviour)
+      "icarus"    -> box/argon, ICARUS_POT, summed over the TWO cryostat
+                     centres in S.ICARUS_MODULE_CENTERS_BNB
+
+    eff_mode defaults per detector: "mb" for MiniBooNE (its own Cherenkov
+    selection curve) and "lartpc" for SBND/ICARUS (EM-shower efficiency), rather
+    than silently applying the MiniBooNE curve to liquid argon.
+    """
+    det = detector.lower()
+    if eff_mode is None:
+        eff_mode = "mb" if det == "miniboone" else "lartpc"
+
+    # Use the REAL dk2nu flux, not the synthetic BNBFlux sample. analytic_*'s
+    # meson_fn=None falls back to _mesons (synthetic), and that is a 13x
+    # difference in absolute rate at MiniBooNE -- the synthetic sample is a
+    # convenience for shape work, not a normalisation. Every fit in this
+    # directory (scan_brute_grid, mcmc_fit) passes _mesons_dk2nu explicitly, so
+    # anything meant to be comparable with them must do the same.
+    if meson_fn is None:
+        meson_fn = _mesons_dk2nu
+
+    if det == "miniboone":
+        fn = analytic_vec_mb if vector else analytic_sp_mb
+        pot = S.MINIBOONE_POT
+        call = lambda nm: fn(S, nm, n_dec=n_dec, eff_mode=eff_mode, meson_fn=meson_fn)
+    elif det == "sbnd":
+        fn = analytic_vec if vector else analytic_sp
+        pot = S.SBND_POT
+        call = lambda nm: fn(S, nm, n_dec=n_dec, eff_mode=eff_mode, meson_fn=meson_fn)
+    elif det == "icarus":
+        fn = analytic_vec if vector else analytic_sp
+        pot = S.ICARUS_POT
+        centres = S.ICARUS_MODULE_CENTERS_BNB          # both cryostats
+
+        def call(nm):
+            Es, ws = [], []
+            for c in centres:
+                E, w = fn(S, nm, n_dec=n_dec, eff_mode=eff_mode,
+                          det=np.asarray(c, float), pot=pot,
+                          meson_fn=_mesons_dk2nu)
+                Es.append(E); ws.append(w)
+            return np.concatenate(Es), np.concatenate(ws)
+    else:
+        raise ValueError("detector must be miniboone, sbnd or icarus; got %r" % detector)
+
+    print("\n" + "=" * 66)
+    print("  AUTHORITATIVE ANALYTIC RATE  --  %s  (POT=%.3e, eff=%s)"
+          % (label, pot, eff_mode))
+    print("  (validated sigma*N*chord; the SIREN directed sampler OVER-estimates)")
+    print("=" * 66)
+    res = {}; grand = 0.0
+    for nm in S.CHANNELS:
+        E, w = call(nm)
+        res[nm] = (E, w); grand += w.sum()
+        ev = (E * w).sum() / w.sum() if w.sum() > 0 else 0.0
+        print("  %-7s : %.4e events   <E_vis>=%.0f MeV" % (nm, w.sum(), ev * 1e3))
+    print("  " + "-" * 50)
+    print("  %-7s : %.4e events" % ("TOTAL", grand))
+    print("=" * 66)
+    return res
 
 
 def report(S, label, vector=False, n_dec=400, eff_mode="mb"):

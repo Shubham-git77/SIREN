@@ -35,12 +35,20 @@ def load(path, name):
 SA = load(os.path.join(PKG, "AnalyticRate.py"), "AnalyticRate")
 
 # ---- digitized MiniBooNE nu-mode E_vis (same as fig2_paperstyle) ----
-DATA_E   = np.array([225,275,325,375,425,475,525,575,625,675,725,775,825,875,925,975,1025,1075,1125],float)
-DATA_N   = np.array([302,402,333,279,189,168,134,118, 81, 83, 75, 84, 57, 61, 38, 52, 26, 19, 19],float)
-DATA_ERR = np.array([ 36, 41, 38, 35, 28, 27, 25, 23, 18, 19, 18, 19, 15, 18, 13, 15, 11, 12, 10],float)
-BKG      = np.array([255,320,300,250,175,150,120,105, 76, 78, 70, 76, 52, 55, 35, 47, 24, 18, 17],float)
+# MiniBooNE nu-mode data now comes from the shared module. It used to be a
+# 19-bin digitization inlined here, which matched no official release and
+# silently diverged from the corrected 11-bin HEPData binning used by
+# scan_brute_grid.py / mcmc_fit.py -- results from the two were not
+# comparable. ERR_MODE=quad adds the MiniBooNE background systematics the
+# paper says it used; ERR_MODE=stat (default) keeps the historical
+# stat-only weighting.
+import os as _os
+import miniboone_data as MB
+DATA_E, DATA_N, DATA_ERR, BKG, EBINS = MB.DATA_E, MB.DATA_N, MB.DATA_ERR, MB.BKG, MB.EBINS
+ERR_MODE = _os.environ.get("ERR_MODE", "stat")
+EXCESS = MB.EXCESS
+INV2 = 1.0 / MB.errors(ERR_MODE) ** 2
 PBINS = np.concatenate([[DATA_E[0]-25], DATA_E+25]) / 1e3   # GeV edges 0.200..1.150
-EXCESS = DATA_N - BKG; INV2 = 1.0 / DATA_ERR**2
 
 NDEC = 400
 ET_ENGINE = np.concatenate([np.linspace(0.001, 0.3, 120), np.linspace(0.31, 9, 160)])
@@ -92,8 +100,11 @@ for portal, f in CFG.items():
     imin = np.unravel_index(np.argmin(C), C.shape)
     # best-fit product per m_Zp (the #2 spine, via chi2 min over P)
     fitlines[portal] = PROD_GRID[np.argmin(C, axis=1)]
-    print("  %s  chi2_min=%.2f at m_Zp=%.0f MeV, P=%.2e  (null %.1f, 18 dof)"
-          % (portal, C.min(), MZP_GRID[imin[0]]*1e3, PROD_GRID[imin[1]], chi2_null)); sys.stdout.flush()
+    # dof was hardcoded 18 from the superseded 19-bin digitisation; the official
+    # release has 11 bins and this fit floats (m_Zp, product), so it is 11-2 = 9.
+    print("  %s  chi2_min=%.2f at m_Zp=%.0f MeV, P=%.2e  (null %.1f, %d dof)"
+          % (portal, C.min(), MZP_GRID[imin[0]]*1e3, PROD_GRID[imin[1]], chi2_null,
+             len(MB.DATA_N)-2)); sys.stdout.flush()
 
 np.savez(os.path.join(HERE, "output", "credible_region_mZp_product.npz"),
          mzp_MeV=MZP_GRID*1e3, prod=PROD_GRID,

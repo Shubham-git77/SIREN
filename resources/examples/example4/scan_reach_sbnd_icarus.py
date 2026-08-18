@@ -39,7 +39,19 @@ SA = load(os.path.join(PKG, "AnalyticRate.py"), "AnalyticRate")
 from analytic_NuMI_ICARUS import numi_meson_fn, ICARUS_NUMI_POT     # NuMI flux + NuMI->BNB transform
 SINGLE_GAMMA_EFF = float(os.environ.get("SINGLE_GAMMA_EFF", "0.10"))
 
-WIN = (0.140, 0.300); EXCESS = 320.0; NDEC = 300
+# ANCHOR (reviewed 2026-08-17). 320 is the paper's "MiniBooNE observed 320 excess
+# events below 300 MeV visible energy" [its ref 3]. It is NOT derivable from the
+# official release we now use: HEPData ins1804293 starts at 200 MeV and gives
+# 204.8 in 200-300, so the paper's 320 must include the 150-200 MeV region that
+# release does not cover. Keeping 320 preserves the historical result and the
+# paper's own statement; deriving it from miniboone_data over [200,300] would
+# instead give 204.8 and shift every fitted coupling by sqrt(320/204.8) = 1.25.
+# Set EXCESS_WINDOW_ANCHOR=data to use the release value instead.
+import os as _os
+import miniboone_data as _MB
+_ANCHOR = _os.environ.get("EXCESS_WINDOW_ANCHOR", "paper320")
+WIN = (0.140, 0.300); NDEC = 300
+EXCESS = 320.0 if _ANCHOR == "paper320" else float(_MB.EXCESS[0])
 ET_ENGINE = np.concatenate([np.linspace(0.001, 0.3, 120), np.linspace(0.31, 9, 160)])
 ET_SCAN   = np.linspace(0.13, 0.32, 60)
 MZP_GRID  = np.geomspace(0.030, 0.200, 24)

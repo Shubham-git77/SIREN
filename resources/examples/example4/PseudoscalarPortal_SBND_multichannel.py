@@ -40,7 +40,18 @@ from siren.Weighter import Weighter
 # ------------------------------------------------------------------ #
 #  Load physics modules (MesonProduction + DarkPrimakoff + Dk2nuReader) #
 # ------------------------------------------------------------------ #
-_PROC_DIR = os.path.join(_util.resource_package_dir(), "processes", "DarkNewsTables")
+# SIREN_DNT_DIR overrides where the physics modules come from, exactly as
+# scan_brute_grid.py / mcmc_fit.py already honour it. Without it these
+# configs silently load AnalyticRate/MesonProduction/DarkPrimakoff from the
+# INSTALLED siren package rather than this source tree, so edits to those
+# modules have no effect here while appearing to work everywhere else --
+# which is how the 2026-08-17 vector runs still picked up CALIB_VECTOR=2412
+# from the installed copy hours after it was retired in the source.
+_PROC_DIR = os.environ.get(
+    "SIREN_DNT_DIR",
+    os.path.join(_util.resource_package_dir(), "processes", "DarkNewsTables"))
+_AR = _util.load_module("DuttaKim_AnalyticRate",
+                       os.path.join(_PROC_DIR, "AnalyticRate.py"))
 _MESON = _util.load_module("DuttaKim_MesonProduction",
                            os.path.join(_PROC_DIR, "MesonProduction.py"))
 _DK = _util.load_module("DuttaKim_Dk2nuReader",
@@ -104,7 +115,10 @@ events_to_inject = 10_000
 E_VIS_THRESHOLD = 0.140
 
 # SBND BNB exposure (SBN programme nominal, neutrino mode).
-SBND_POT = 6.6e20
+from sbn_exposures import SBND_POT as _EXPOSURE  # single source of truth;
+# was hardcoded here (see sbn_exposures.py for why the old ICARUS value
+# was both duplicated and mislabelled as a NuMI exposure).
+SBND_POT = _EXPOSURE
 #
 # Energy-dependent detection efficiency eps(E_vis). NOTE: the digitized MiniBooNE
 # single-photon efficiency (mb_eff, ~0.1) does NOT apply here -- SBND is a LArTPC
@@ -113,8 +127,28 @@ SBND_POT = 6.6e20
 _EFF_TABLE = None
 
 def detection_efficiency(E_vis_gev):
+    """EM-shower reconstruction efficiency for a LArTPC.
+
+    Returning 1.0 here (the old behaviour when _EFF_TABLE is None) is not a
+    neutral default -- it silently claims perfect detection, making absolute
+    rates ~10x optimistic against the 0.10 single-photon efficiency the reach
+    study actually applies. There IS a physical model available: AnalyticRate's
+    generic-LArTPC turn-on (RECO_PLATEAU 0.90, 50% point 50 MeV, hard threshold
+    30 MeV), driven by the LAr medium and therefore common to SBND/ICARUS.
+    Use it instead of 1.0.
+
+    NOTE this is the RECO turn-on only. The full lartpc efficiency also carries
+    a geometric pair-conversion + shower-containment factor, which depends on
+    the scatter vertex and so cannot be computed from E_vis alone -- the
+    analytic engine applies it via eff_mode="lartpc". Prefer that path for
+    absolute rates; this function is the energy-dependent part for callers
+    that only have E_vis.
+    """
     if _EFF_TABLE is None:
-        return 1.0
+        # NB load by explicit path, like every other sibling module here. A plain
+        # "import AnalyticRate" is intercepted by SIREN's resource loader, which
+        # does not know the name and raises ImportError.
+        return float(np.asarray(_AR.reco_turnon(np.asarray(E_vis_gev, float))))
     E = np.asarray(_EFF_TABLE)[:, 0]; eff = np.asarray(_EFF_TABLE)[:, 1]
     return float(np.interp(E_vis_gev, E, eff, left=eff[0], right=eff[-1]))
 
@@ -588,9 +622,13 @@ def main():
     if args.engine == "analytic":
         import sys, os as _o
         from siren import _util as _u
-        sbnd_analytic = _u.load_module('AnalyticRate', _o.path.join(_u.resource_package_dir(), 'processes', 'DarkNewsTables', 'AnalyticRate.py'))
-        res = sbnd_analytic.report(sys.modules[__name__], "SBND pseudoscalar a->gamma",
-                                   vector=False, n_dec=args.n_dec)
+        # _PROC_DIR honours SIREN_DNT_DIR; resource_package_dir() hardcoded here
+        # bypassed it and loaded the INSTALLED AnalyticRate instead of this
+        # source tree, which is exactly the split that hid today's fixes.
+        sbnd_analytic = _u.load_module('AnalyticRate',
+                                       _o.path.join(_PROC_DIR, 'AnalyticRate.py'))
+        res = sbnd_analytic.report_detector(sys.modules[__name__], "SBND pseudoscalar a->gamma", "sbnd",
+                                           vector=False, n_dec=args.n_dec)
         os.makedirs("output", exist_ok=True)
         np.savez("output/SBND_pseudo_analytic.npz",
                  **{f"{n}_E": res[n][0] for n in res},

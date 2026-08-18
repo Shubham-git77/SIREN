@@ -62,7 +62,9 @@ _R, _t = np.asarray(T.R, float), np.asarray(T.t, float)
 _glob = os.environ.get("NUMI_DK2NU_GLOB", os.path.join(HERE, "sources", "NuMI", "g4numi*.root"))
 NUMI_FILES = ([os.environ["NUMI_DK2NU_FILE"]] if os.environ.get("NUMI_DK2NU_FILE")
               else sorted(glob.glob(_glob)))
-ICARUS_NUMI_POT = float(os.environ.get("ICARUS_NUMI_POT", "3.0e21"))
+from sbn_exposures import ICARUS_NUMI_POT  # single source of truth (env-overridable)
+# was a second, independent hardcoding of the same physical quantity; the
+# BNB configs carried a different value under a confusingly similar name.
 
 
 def _beam_tag(files):

@@ -23,6 +23,12 @@ import os, json, importlib.util, numpy as np
 import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
 
 PORTAL = os.environ.get("PORTAL", "scalar")
+# OUT_DIR redirects every artefact. Tests and throwaway runs MUST set it: this
+# script overwrites output/mcmc_<portal>_{chain.npz,corner.png,mZp_product.png}
+# unconditionally, and output/ is gitignored, so a short test run silently
+# destroys a real result. That is exactly how the 2026-07-27 scalar chain was
+# lost on 2026-08-16.
+OUT_DIR = os.environ.get("MCMC_OUT", "output")
 os.environ.setdefault("DK2NU_FILE", "/home/shubham/nubeam12M.dk2nu.root")
 HERE = os.path.dirname(os.path.abspath(__file__)); os.chdir(HERE)
 PKG  = os.environ.get(
@@ -44,16 +50,38 @@ CFG = {"scalar":"ScalarPortal_MiniBooNE_multichannel.py",
        "pseudo":"PseudoscalarPortal_MiniBooNE_multichannel.py"}[PORTAL]
 
 # ---------- data ----------
-DATA_N = np.array([302,402,333,279,189,168,134,118,81,83,75,84,57,61,38,52,26,19,19],float)
-DATA_E = np.array([225,275,325,375,425,475,525,575,625,675,725,775,825,875,925,975,1025,1075,1125],float)
-DATA_ERR=np.array([36,41,38,35,28,27,25,23,18,19,18,19,15,18,13,15,11,12,10],float)
-BKG    = np.array([255,320,300,250,175,150,120,105,76,78,70,76,52,55,35,47,24,18,17],float)
-EBINS = np.concatenate([[DATA_E[0]-25], DATA_E+25]) / 1e3
-EXCESS = DATA_N-BKG; INV2 = 1.0/DATA_ERR**2
+# Arrays now come from the shared module -- they used to be inlined here as a
+# 19-bin digitization that no longer matches the official release the paper cites.
+import miniboone_data as MB
+DATA_N, DATA_ERR, BKG, EBINS, EXCESS = MB.DATA_N, MB.DATA_ERR, MB.BKG, MB.EBINS, MB.EXCESS
+
+# ERR_MODE=stat reproduces the historical (stat-only) likelihood; ERR_MODE=quad adds
+# the MiniBooNE background systematics the paper says it added in quadrature, which
+# is 5-12x less chi2 weight per bin.
+ERR_MODE = os.environ.get("ERR_MODE", "stat")
+INV2 = 1.0 / MB.errors(ERR_MODE) ** 2
+
+# COS_WEIGHT scales the cos-theta template errors: 1 = original weight, "off" drops
+# the term. It is NOT data -- it is a pixel-extracted shape of the paper's own Fig.2
+# signal band with an invented 320-event error -- and on the brute grid it supplies
+# 145 chi2 units of spread against 61 from the real E_vis data, i.e. it outvotes the
+# measurement and is what drives the fitted m_Zp high. Under ERR_MODE=quad the
+# imbalance gets worse (~14:1), so vary the two together, not separately.
+COS_WEIGHT = os.environ.get("COS_WEIGHT", "1")
 ct = json.load(open("cos_template_nu.json"))
 COS_TGT = np.array(ct["shape"]); COS_TGT/=COS_TGT.sum()
 NCB=len(COS_TGT); COS_EDGES=np.linspace(-1,1,NCB+1)
-COS_SIG = np.sqrt(COS_TGT*(1-COS_TGT)/320.0)+0.01
+COS_OFF = (COS_WEIGHT == "off")
+# Vocabulary matches rederive_regions.py --cos: "off" drops the term, "on" (or "1")
+# keeps its original weight, any other number scales the template errors.
+if COS_OFF or COS_WEIGHT == "on":
+    _cos_scale = 1.0
+else:
+    try:
+        _cos_scale = float(COS_WEIGHT)
+    except ValueError:
+        raise SystemExit("COS_WEIGHT must be 'off', 'on', or a number; got %r" % COS_WEIGHT)
+COS_SIG = (np.sqrt(COS_TGT*(1-COS_TGT)/320.0)+0.01) * _cos_scale
 WIN=(0.14,0.30)
 
 # ---------- response-grid precompute over (m_phi, m_Zp) ----------
@@ -61,7 +89,10 @@ NDEC=120
 MPHI_GRID = np.array([1,10,20,30,45,60,80,100],float)/1e3     # GeV
 MZP_GRID  = np.geomspace(0.030,0.200,36)                       # GeV
 ET_ENGINE = np.concatenate([np.linspace(0.001,0.3,120), np.linspace(0.31,9,160)])
-ET_SIG    = np.linspace(0.13,1.60,90)
+# ET_SIG must span the DATA bins: np.interp clamps beyond its range, so a grid
+# ending at 1.60 GeV froze sigma across the whole 1500-3000 MeV overflow bin of
+# the corrected binning (harmless under the old 19-bin max of 1.15 GeV).
+ET_SIG    = np.concatenate([np.linspace(0.13,1.60,90), np.linspace(1.65,3.20,32)])
 RNG = np.random.default_rng(11)
 
 def cache_hits(mphi):
@@ -80,25 +111,59 @@ def cache_hits(mphi):
     if not Els: return None
     return np.concatenate(Els),np.concatenate(Cs),np.concatenate(Gs),dp,P_ref
 
-print("[%s] precomputing response grid over %d m_phi x %d m_Zp ..."%(PORTAL,len(MPHI_GRID),len(MZP_GRID)))
-import sys; sys.stdout.flush()
-EHIST=np.zeros((len(MPHI_GRID),len(MZP_GRID),len(DATA_N)))     # signal events at P_ref
-CHIST=np.zeros((len(MPHI_GRID),len(MZP_GRID),NCB))            # normalized cos shape
-P_REF=None
-for a,mphi in enumerate(MPHI_GRID):
-    hit=cache_hits(mphi)
-    if hit is None: continue
-    El,Cmed,G,dp,P_REF=hit
-    for b,mzp in enumerate(MZP_GRID):
-        dp.m_Zp=float(mzp)
-        sig=np.interp(El,ET_SIG,np.array([dp.total_xsec(float(e)) for e in ET_SIG]))
-        w=G*sig
-        EHIST[a,b]=np.histogram(El,bins=EBINS,weights=w)[0]
-        m=(El>=WIN[0])&(El<=WIN[1])
-        cg=DP.smear_photon_beam(Cmed[m],El[m],dp,RNG)
-        hc,_=np.histogram(cg,bins=COS_EDGES,weights=w[m])
-        CHIST[a,b]=hc/hc.sum() if hc.sum()>0 else hc
-    print("  m_phi=%3.0f MeV done"%(mphi*1e3)); sys.stdout.flush()
+# RESPONSE_CUBE=<brute cube .npz> reuses a scan_brute_grid.py cube as the response
+# grid instead of tabulating here. Those cubes hold the SAME objects this block
+# builds (per-mass-point E_vis histogram + normalized cos shape) but on a finer
+# m_phi grid (15 pts vs 8) at 3.3x the decay statistics (NDEC=400 vs 120), and they
+# already exist -- so this skips the expensive engine pass entirely and drops the
+# dk2nu/SIREN dependency for a pure re-fit. Without it, behaviour is unchanged
+# except that the freshly built grid is now SAVED for reuse rather than discarded.
+import sys
+RESPONSE_CUBE = os.environ.get("RESPONSE_CUBE", "")
+if RESPONSE_CUBE:
+    _d = np.load(RESPONSE_CUBE)
+    for _k in ("Ehist", "cosshape"):
+        if _k not in _d:
+            sys.exit("ERROR: %s has no %s -- it predates the raw-output patch in "
+                     "scan_brute_grid.py and cannot serve as a response grid."
+                     % (RESPONSE_CUBE, _k))
+    EHIST = _d["Ehist"]; CHIST = _d["cosshape"]
+    MPHI_GRID = _d["mphi_MeV"] / 1e3          # bilinear() reads these globals
+    MZP_GRID  = _d["mzp_MeV"] / 1e3
+    P_REF = float(_d["P_ref"])
+    if EHIST.shape[-1] != len(DATA_N):
+        sys.exit("ERROR: cube has %d E bins, data has %d -- cube was built against a "
+                 "different binning." % (EHIST.shape[-1], len(DATA_N)))
+    PLOT_MZP = (float(MZP_GRID[0] * 1e3), float(MZP_GRID[-1] * 1e3))
+    PLOT_PROD = (float(_d["prod"][0]), float(_d["prod"][-1])) if "prod" in _d else None
+    print("[%s] response grid from %s: %d m_phi x %d m_Zp, P_ref=%.3e"
+          % (PORTAL, RESPONSE_CUBE, len(MPHI_GRID), len(MZP_GRID), P_REF))
+else:
+    print("[%s] precomputing response grid over %d m_phi x %d m_Zp ..."
+          % (PORTAL, len(MPHI_GRID), len(MZP_GRID)))
+    sys.stdout.flush()
+    EHIST=np.zeros((len(MPHI_GRID),len(MZP_GRID),len(DATA_N)))     # signal events at P_ref
+    CHIST=np.zeros((len(MPHI_GRID),len(MZP_GRID),NCB))            # normalized cos shape
+    P_REF=None
+    for a,mphi in enumerate(MPHI_GRID):
+        hit=cache_hits(mphi)
+        if hit is None: continue
+        El,Cmed,G,dp,P_REF=hit
+        for b,mzp in enumerate(MZP_GRID):
+            dp.m_Zp=float(mzp)
+            sig=np.interp(El,ET_SIG,np.array([dp.total_xsec(float(e)) for e in ET_SIG]))
+            w=G*sig
+            EHIST[a,b]=np.histogram(El,bins=EBINS,weights=w)[0]
+            m=(El>=WIN[0])&(El<=WIN[1])
+            cg=DP.smear_photon_beam(Cmed[m],El[m],dp,RNG)
+            hc,_=np.histogram(cg,bins=COS_EDGES,weights=w[m])
+            CHIST[a,b]=hc/hc.sum() if hc.sum()>0 else hc
+        print("  m_phi=%3.0f MeV done"%(mphi*1e3)); sys.stdout.flush()
+    os.makedirs(OUT_DIR, exist_ok=True)
+    np.savez(os.path.join(OUT_DIR,"mcmc_%s_response.npz"%PORTAL), Ehist=EHIST, cosshape=CHIST,
+             mphi_MeV=MPHI_GRID*1e3, mzp_MeV=MZP_GRID*1e3, P_ref=P_REF)
+    print("  saved %s/mcmc_%s_response.npz (reusable via RESPONSE_CUBE=)"%(OUT_DIR,PORTAL))
+    PLOT_MZP = (float(MZP_GRID[0]*1e3), float(MZP_GRID[-1]*1e3)); PLOT_PROD = None
 
 def bilinear(grid, mphi, mzp):
     """Interpolate response grid[a,b,:] at (mphi[GeV], mzp[GeV])."""
@@ -121,11 +186,12 @@ def logprob(th):
     chi2_E = np.sum((EXCESS-Ev)**2*INV2)
     cs = bilinear(CHIST, mphi/1e3, mZp/1e3); s=cs.sum()
     cs = cs/s if s>0 else cs
-    chi2_c = np.sum((COS_TGT-cs)**2/COS_SIG**2)
+    chi2_c = 0.0 if COS_OFF else np.sum((COS_TGT-cs)**2/COS_SIG**2)
     return -0.5*(chi2_E+chi2_c)
 
 # ---------- affine-invariant ensemble sampler (emcee stretch move) ----------
-def run_mcmc(nwalkers=40, nsteps=4000, seed=1):
+def run_mcmc(nwalkers=int(os.environ.get("MCMC_WALKERS", "40")),
+             nsteps=int(os.environ.get("MCMC_STEPS", "4000")), seed=1):
     rng=np.random.default_rng(seed); ndim=5
     ctr=0.5*(PLO+PHI); span=(PHI-PLO)
     pos=ctr+0.25*span*(rng.random((nwalkers,ndim))-0.5)     # start near center
@@ -156,7 +222,7 @@ flat=chain[burn:].reshape(-1,5)
 lgP = flat[:,0]+flat[:,1]+flat[:,2]                        # log10 product
 samples=np.column_stack([flat, lgP])                      # add derived product
 labels=[r"$\log_{10}g_\mu$",r"$\log_{10}g_n$",r"$\log_{10}\lambda$",r"$m_{Z'}$",r"$m_\phi$",r"$\log_{10}(g_\mu g_n\lambda)$"]
-np.savez("output/mcmc_%s_chain.npz"%PORTAL, chain=chain, flat=flat, lgP=lgP, labels=labels)
+os.makedirs(OUT_DIR, exist_ok=True); np.savez(os.path.join(OUT_DIR,"mcmc_%s_chain.npz"%PORTAL), chain=chain, flat=flat, lgP=lgP, labels=labels)
 
 # ---------- corner plot ----------
 def corner(s, labels, truths=None):
@@ -183,8 +249,8 @@ def corner(s, labels, truths=None):
 # paper Table I truth (scalar 49/2.2e-8, pseudo 85/5.9e-7); log couplings unknown individually
 paperP = {"scalar":(49.0,np.log10(2.2e-8)),"pseudo":(85.0,np.log10(5.9e-7))}[PORTAL]
 truths=[None,None,None,paperP[0],None,paperP[1]]
-corner(samples,labels,truths).savefig("output/mcmc_%s_corner.png"%PORTAL,dpi=110)
-print("wrote output/mcmc_%s_corner.png"%PORTAL)
+corner(samples,labels,truths).savefig(os.path.join(OUT_DIR,"mcmc_%s_corner.png"%PORTAL),dpi=110)
+print("wrote %s/mcmc_%s_corner.png"%(OUT_DIR,PORTAL))
 
 # ---------- (m_Zp, product) 2D posterior with 68/95 contours ----------
 fig,ax=plt.subplots(figsize=(7,6))
@@ -197,11 +263,18 @@ ax.contourf(X,Y,H,levels=[l95,l68,H.max()],colors=["#bcd","#69c"],alpha=0.7)
 ax.contour(X,Y,H,levels=[l95,l68],colors="k",linewidths=[0.8,1.4])
 ax.plot(paperP[0],paperP[1],"*",color="red",ms=18,label="paper Table I")
 ax.set_xscale("log")
+# Pin the axes to the response-grid extent. Auto-scaling to the posterior made
+# the paper star land in a corner with no sense of how far outside it sat, and
+# made these plots impossible to compare with the brute-grid region figures,
+# which use exactly these limits.
+ax.set_xlim(*PLOT_MZP)
+if PLOT_PROD is not None:
+    ax.set_ylim(np.log10(PLOT_PROD[0]), np.log10(PLOT_PROD[1]))
 ax.set_xlabel(r"$m_{Z'}$ [MeV]"); ax.set_ylabel(r"$\log_{10}(g_\mu g_n\lambda)$ [MeV$^{-1}$]")
 ax.set_title("MCMC posterior (%s): 68%%/95%% credible region\nfull 5-param fit, coupling WALKED not solved"%PORTAL)
 ax.legend(); ax.grid(alpha=0.3)
-fig.tight_layout(); fig.savefig("output/mcmc_%s_mZp_product.png"%PORTAL,dpi=120)
-print("wrote output/mcmc_%s_mZp_product.png"%PORTAL)
+fig.tight_layout(); fig.savefig(os.path.join(OUT_DIR,"mcmc_%s_mZp_product.png"%PORTAL),dpi=120)
+print("wrote %s/mcmc_%s_mZp_product.png"%(OUT_DIR,PORTAL))
 print("[%s] DONE. product log10 = %.2f +/- %.2f ; m_Zp = %.0f +/- %.0f MeV ; m_phi = %.0f +/- %.0f"
       %(PORTAL, np.median(lgP), np.std(lgP), np.median(flat[:,3]), np.std(flat[:,3]),
         np.median(flat[:,4]), np.std(flat[:,4])))

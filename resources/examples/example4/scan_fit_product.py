@@ -37,7 +37,18 @@ def load(path, name):
 SA = load(os.path.join(PKG, "AnalyticRate.py"), "AnalyticRate")
 
 WIN    = (0.140, 0.300)          # GeV, MiniBooNE single-photon window
-EXCESS = 320.0                   # events
+# ANCHOR (reviewed 2026-08-17). 320 is the paper's "MiniBooNE observed 320 excess
+# events below 300 MeV visible energy" [its ref 3]. It is NOT derivable from the
+# official release we now use: HEPData ins1804293 starts at 200 MeV and gives
+# 204.8 in 200-300, so the paper's 320 must include the 150-200 MeV region that
+# release does not cover. Keeping 320 preserves the historical result and the
+# paper's own statement; deriving it from miniboone_data over [200,300] would
+# instead give 204.8 and shift every fitted coupling by sqrt(320/204.8) = 1.25.
+# Set EXCESS_WINDOW_ANCHOR=data to use the release value instead.
+import os as _os
+import miniboone_data as _MB
+_ANCHOR = _os.environ.get("EXCESS_WINDOW_ANCHOR", "paper320")
+EXCESS = 320.0 if _ANCHOR == "paper320" else float(_MB.EXCESS[0])   # events
 NDEC   = 400
 MESON  = SA._mesons_dk2nu        # real dk2nu flux (cached inside the process)
 # engine's own sigma-table energy grid (must match to strip sigma_ref exactly):

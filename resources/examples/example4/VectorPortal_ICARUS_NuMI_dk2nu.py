@@ -101,7 +101,34 @@ def load_numi_mesons(dk2nu_data, parent_pdg, detector_model, upscatter=None):
 fc.load_dk2nu_mesons = load_numi_mesons
 
 
+def _warn_sampler_normalisation():
+    """Print the normalisation caveat before any SIREN-sampler run.
+
+    The SBND scripts expose --engine {analytic,siren} and default to the
+    analytic estimator. These scripts have no such switch: they only run the
+    SIREN directed importance sampler, which AnalyticRate.py documents as
+    over-estimating these rates 60-400x through an uncancelled production
+    boost-Jacobian. Silence would let a reader take the printed absolute
+    rates at face value, so say it out loud every run.
+
+    This became more important on 2026-08-17: CALIB_VECTOR (=2412) used to sit
+    in this path absorbing part of that error, and it has been retired now the
+    production normalisation is derived analytically. The sampler's own
+    normalisation error is therefore no longer masked.
+    """
+    import sys
+    print("=" * 74, file=sys.stderr)
+    print(" WARNING: this script uses the SIREN directed importance sampler.", file=sys.stderr)
+    print(" Its ABSOLUTE rates are known to be over-estimated 60-400x", file=sys.stderr)
+    print(" (uncancelled production boost-Jacobian; see AnalyticRate.py).", file=sys.stderr)
+    print(" Shapes and relative channel weights are usable; absolute", file=sys.stderr)
+    print(" normalisation is NOT. For trustworthy rates use:", file=sys.stderr)
+    print("   ", file=sys.stderr)
+    print("=" * 74, file=sys.stderr)
+
+
 def main():
+    _warn_sampler_normalisation()
     ap = argparse.ArgumentParser()
     ap.add_argument("--channel", choices=list(fc.CHANNELS) + ["all"],
                     default="K_e")

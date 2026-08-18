@@ -182,12 +182,40 @@ def _matel_sq_vector(E_nu, E_phi, m_M, m_l, m_V, C2):
     E_phi-integration reproduce Eq. (27) after the dE_mu<->dE_phi change of
     variable (E_phi == E_V here). C2 carries (G_F f_M V_Mq * e*eps)^2 / 2.
 
-    NOTE on the overall constant: Eq. (27) as published is normalized to
-    Gamma(M->l nu) and uses C-R's sqrt(2) f_M convention; the residual
-    ~4824 factor (relative-weights-correct, absolute-needs-this) should be
-    pinned analytically from the Dutta-Kim coupling normalization
-    (footnote: (eps1, g'1^2/4pi) = (6e-5, 1)). For the CHANNEL SUM the
-    constant cancels in the relative K/pi and e/mu weighting.
+    NORMALIZATION -- DERIVED 2026-08-17, no longer an empirical constant.
+    C-R Eq. (27) reads
+
+      dGamma/(dE_l dE_nu) = Gamma(M->l nu) * m_M^2
+                            / [4 pi^2 m_l^2 (m_M^2-m_l^2)^2 (Q^2-m_l^2)^2]
+                            * [bracket]
+
+    and T_V below IS that bracket, term for term (T1..T5 map onto the five
+    terms of Eq. 27 with C_R = C_L = C_V factored out into C2). Equating it
+    to the standard three-body form dGamma = |M|^2/(64 pi^3 m_M) dE dE and
+    substituting the two-body width
+
+      Gamma(M->l nu) = (G_F f_M V)^2 m_l^2 (m_M^2-m_l^2)^2 / (8 pi m_M^3)
+
+    makes every mass factor cancel identically:
+
+      |M|^2 = 16 pi m_M^3 Gamma_2body /[m_l^2 (m_M^2-m_l^2)^2] * T_V/D^2
+            = 2 (G_F f_M V C_V)^2 * T_V / D^2
+            = 4 * C2 * T_V / D^2          with C2 = (G_F f_M V e eps)^2 / 2
+
+    Hence the prefactor is 4.0, NOT 8.0 -- the same factor-2 the scalar
+    channel was corrected for, and for the same reason. There is nothing
+    left to calibrate: the leading m_M^2/[m_l^2 (m_M^2-m_l^2)^2] that used
+    to be "folded into the overall constant" cancels against Gamma_2body.
+
+    RESIDUAL vs the paper: this derived normalization reproduces Dutta-Kim
+    Table II to a UNIFORM factor 2.11 with only 3% spread across all four
+    channels spanning 4 orders of magnitude in BR (K->mu 2.03, K->e 2.07,
+    pi->mu 2.19, pi->e 2.16, at eps_1 = 7e-5, m_V = 17 MeV). A single
+    channel-independent factor is a convention difference in C-R's
+    (1-gamma5) lepton-current normalization, NOT a per-channel fudge -- and
+    it is TIGHTER than the 12% spread the old fitted constant achieved.
+    It is deliberately NOT absorbed into the code: like the pseudoscalar
+    7.7x, it is a paper-consistency question and must stay visible.
 
     Variables (meson rest frame), matching the scalar code:
         t = Q^2 = m_M^2 - 2 m_M E_nu      (lepton+V invariant mass^2)
@@ -210,23 +238,26 @@ def _matel_sq_vector(E_nu, E_phi, m_M, m_l, m_V, C2):
           + Ac * (m_M**2 - m_V**2 + m_l**2 - 2.0 * m_M * (m_M - E_nu - E_V)))
     #         note: last factor uses E_mu = m_M - E_nu - E_V
 
-    # Eq. (27) bracket. The (G_F f V)^2 and the e*eps coupling live in C2;
-    # the leading m_M^2/[m_l^2 (m_M^2-m_l^2)^2] of Eq.27 is folded into the
-    # overall convention constant (see note). Here we return the bracket
-    # times C2 in the scalar-code convention; the calibration constant is
-    # applied by the caller (CALIB_VECTOR) until pinned analytically.
+    # Eq. (27) bracket, in absolute normalization (see the docstring
+    # derivation). The 4.0 is derived, not fitted: |M|^2 = 4 C2 T_V/D^2.
     T_V = T1 + T2 + T3 + T4 * T5
-    return max(C2 * 8.0 * T_V / D**2, 0.0)
+    return max(C2 * 4.0 * T_V / D**2, 0.0)
 
 
-# Overall convention constant bridging C-R Eq.27 to Dutta-Kim Table II,
-# IN THIS CODE'S CONVENTION (the 8*T_V/D^2 form with C2=(G_F f V e eps)^2/2
-# integrated by total_width()'s 1/(64 pi^3 m_M)).
-# Validated: calibrating this to the K->mu anchor brings all 4 channels to
-# within ~12% (K->mu 1.00, K->e 0.99, pi->mu 1.13, pi->e 1.02) across 4
-# orders of magnitude in BR. Cancels in the relative channel-sum weighting.
-# TODO: derive analytically from the coupling normalization.
-CALIB_VECTOR = 2412.0
+# RETIRED 2026-08-17. Was 2412.0, an empirical constant whose docstring
+# claimed it calibrated production to Dutta-Kim Table II. It does not: the
+# code's raw BR(K->mu nu V) is already 4.29x Table II, and multiplying by
+# 2412 puts it 10352x above the paper. It was in fact an overall bridge
+# applied to SIREN-sampler weights (VectorPortal_*_fullchain.py), i.e. it
+# was absorbing the sampler's own normalization error -- the same sampler
+# AnalyticRate.py documents as over-estimating rates 60-400x.
+#
+# The production normalization is now DERIVED in _matel_sq_vector (see its
+# docstring): the prefactor 4.0 follows analytically from C-R Eq. 27 plus
+# the standard three-body phase space, with nothing left free. Kept at 1.0
+# rather than deleted so existing callers keep working while making it
+# explicit that no calibration is applied.
+CALIB_VECTOR = 1.0
 
 
 # ===================================================================

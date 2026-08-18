@@ -40,10 +40,19 @@ S_ps  = load(os.path.join(HERE, "PseudoscalarPortal_MiniBooNE_multichannel.py"),
 S_vec = load(os.path.join(HERE, "VectorPortal_MiniBooNE_fullchain.py"),          "S_vec")
 
 # ---- Digitized MiniBooNE nu-mode E_vis (Dutta-Kim Fig.2 bottom-left) ----
-DATA_E   = np.array([225,275,325,375,425,475,525,575,625,675,725,775,825,875,925,975,1025,1075,1125],float)
-DATA_N   = np.array([302,402,333,279,189,168,134,118, 81, 83, 75, 84, 57, 61, 38, 52, 26, 19, 19],float)
-DATA_ERR = np.array([ 36, 41, 38, 35, 28, 27, 25, 23, 18, 19, 18, 19, 15, 18, 13, 15, 11, 12, 10],float)
-BKG      = np.array([255,320,300,250,175,150,120,105, 76, 78, 70, 76, 52, 55, 35, 47, 24, 18, 17],float)
+# MiniBooNE nu-mode data now comes from the shared module. It used to be a
+# 19-bin digitization inlined here, which matched no official release and
+# silently diverged from the corrected 11-bin HEPData binning used by
+# scan_brute_grid.py / mcmc_fit.py -- results from the two were not
+# comparable. ERR_MODE=quad adds the MiniBooNE background systematics the
+# paper says it used; ERR_MODE=stat (default) keeps the historical
+# stat-only weighting.
+import os as _os
+import miniboone_data as MB
+DATA_E, DATA_N, DATA_ERR, BKG, EBINS = MB.DATA_E, MB.DATA_N, MB.DATA_ERR, MB.BKG, MB.EBINS
+ERR_MODE = _os.environ.get("ERR_MODE", "stat")
+EXCESS = MB.EXCESS
+INV2 = 1.0 / MB.errors(ERR_MODE) ** 2
 PBINS = np.concatenate([[DATA_E[0]-25], DATA_E+25])   # 200,250,...,1150 MeV
 WIN_LO, WIN_HI = 0.140, 0.300                          # GeV signal window
 
