@@ -71,18 +71,46 @@ COS_SIG = (np.sqrt(COS_TGT*(1-COS_TGT)/320.0)+0.01) * _cos_scale
 WIN=(0.14,0.30)
 
 NDEC=100
-MV2_GRID = np.geomspace(0.060, 2.0, 26)         # GeV, Fig.3-left x-range
+# Range was 0.060-2.0 (the paper's Fig.3-left x-range) until 2026-08-23, when the
+# best fit was found pinned on the 60 MeV LOWER EDGE -- a grid-truncation artefact.
+# m_V2 is a t-channel exchange mass with no on-shell threshold, so going below the
+# paper's plot range is legitimate; the real minimum sits near 31-36 MeV.
+MV2_LO = float(os.environ.get("MV2_LO", "0.010"))
+MV2_HI = float(os.environ.get("MV2_HI", "2.0"))
+N_MV2  = int(os.environ.get("N_MV2", "38"))
+MV2_GRID = np.geomspace(MV2_LO, MV2_HI, N_MV2)
 P0 = 1.3e-7                                       # paper double-mediator Table I product (anchor)
 RNG = np.random.default_rng(5)
 
 # ---- response grid over m_V2 (only free mass); Ehist(calibrated) + cos shape ----
 import sys
-RESP = os.path.join(OUT_DIR,"mcmc_vector_response.npz")
+_stale = False
+# Key the cache by the grid it was built for. The mass RANGE is configurable now,
+# so a fixed filename plus a count-only staleness check would let a 26-point
+# 60-2000 grid load for a 26-point 10-2000 request -- same shape, wrong physics.
+_isdefault = (N_MV2==26 and abs(MV2_LO-0.060)<1e-12 and abs(MV2_HI-2.0)<1e-12)
+RESP = os.path.join(OUT_DIR, "mcmc_vector_response.npz" if _isdefault else
+                    "vector_response_n%d_d%d_lo%.0f_hi%.0f.npz"
+                    % (N_MV2, NDEC, MV2_LO*1e3, MV2_HI*1e3))
 if os.path.exists(RESP):
     print("[vector] loading cached response grid %s (skip precompute)"%RESP); sys.stdout.flush()
     _r=np.load(RESP); EHIST=_r["EHIST"]; CHIST=_r["CHIST"]
-    assert EHIST.shape[0]==len(MV2_GRID), "cached grid shape mismatch; delete %s to rebuild"%RESP
-else:
+    # Validate BOTH axes. The mass-axis-only check used to let a cache built against
+    # the old 19-bin inlined digitization load against the corrected 11-bin HEPData
+    # binning, which then died in logprob with an opaque broadcast error. Treat any
+    # shape mismatch as "stale" and rebuild rather than assert.
+    _stale = (EHIST.shape[0]!=len(MV2_GRID) or EHIST.shape[1]!=len(DATA_N)
+              or CHIST.shape[0]!=len(MV2_GRID) or CHIST.shape[1]!=NCB)
+    # Shape alone is not identity: check the mass VALUES too.
+    if not _stale:
+        _stale = ("MV2_GRID" not in _r.files
+                  or not np.allclose(_r["MV2_GRID"], MV2_GRID))
+        if _stale:
+            print("[vector] cached grid covers different MASSES -> rebuilding"); sys.stdout.flush()
+    if _stale:
+        print("[vector] cached response %s is STALE (EHIST %s, need (%d,%d)) -> rebuilding"
+              % (RESP, EHIST.shape, len(MV2_GRID), len(DATA_N))); sys.stdout.flush()
+if (not os.path.exists(RESP)) or _stale:
     print("[vector] precomputing response grid over %d m_V2 ..."%len(MV2_GRID)); sys.stdout.flush()
     S = load(CFG, "S_vec")
     CHANS = list(S.CHANNELS)                      # vector is lepton-universal (all channels)
@@ -107,20 +135,35 @@ else:
     print("[vector] saved response grid -> %s"%RESP); sys.stdout.flush()
 
 def interp(grid, mv2):
-    b=np.clip(np.searchsorted(MV2_GRID,mv2)-1,0,len(MV2_GRID)-2)
-    f=np.clip((mv2-MV2_GRID[b])/(MV2_GRID[b+1]-MV2_GRID[b]),0,1)
-    return (1-f)*grid[b]+f*grid[b+1]
+    """Log-log interpolation in mass.
+
+    The response falls as steeply as m_V2^-4, so LINEAR interpolation between
+    log-spaced grid points is a chord above a convex curve and over-estimates the
+    rate by up to ~4% at bin midpoints -- a systematic bias, always in the same
+    direction. Interpolating log(rate) vs log(m) removes it. Zeros are floored
+    rather than dropped so an empty high-mass bin stays at ~0 instead of -inf.
+    """
+    b = np.clip(np.searchsorted(MV2_GRID, mv2) - 1, 0, len(MV2_GRID) - 2)
+    lm, lm0, lm1 = np.log(mv2), np.log(MV2_GRID[b]), np.log(MV2_GRID[b + 1])
+    f = np.clip((lm - lm0) / (lm1 - lm0), 0, 1)
+    FL = 1e-300
+    g0 = np.log(np.maximum(grid[b], FL))
+    g1 = np.log(np.maximum(grid[b + 1], FL))
+    out = np.exp((1 - f) * g0 + f * g1)
+    return np.where(out <= FL * 10, 0.0, out)
 
 # ---- priors + likelihood: theta=(m_V2[MeV], log10 P) ----
-PLO=np.array([60.0, -9.5]); PHI=np.array([2000.0, -5.0])
+PLO=np.array([MV2_LO*1e3, -9.5]); PHI=np.array([MV2_HI*1e3, -5.0])
+MASS_PRIOR = os.environ.get("MASS_PRIOR", "log")   # see mcmc_fit_vector_full.py
 def logprob(th):
     if np.any(th<PLO) or np.any(th>PHI): return -np.inf
     mv2, lgP = th; P=10**lgP
+    lp_mass = -np.log(mv2) if MASS_PRIOR == "log" else 0.0
     Ev = interp(EHIST, mv2/1e3) * (P/P0)**2
     chi2_E = np.sum((EXCESS-Ev)**2*INV2)
     cs = interp(CHIST, mv2/1e3); s=cs.sum(); cs=cs/s if s>0 else cs
     chi2_c = 0.0 if COS_OFF else np.sum((COS_TGT-cs)**2/COS_SIG**2)
-    return -0.5*(chi2_E+chi2_c)
+    return -0.5*(chi2_E+chi2_c) + lp_mass
 
 def run_mcmc(nwalkers=32, nsteps=4000, seed=1):
     rng=np.random.default_rng(seed); ndim=2
